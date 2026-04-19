@@ -270,18 +270,10 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.5/dist/protobuf.min.js"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
-const API_KEY = 'd6e57cef-0084-44d3-892b-a3bee1281805';
-// Key passed as query param (more proxy-friendly than headers)
-const API_URL = `https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/vehicle-positions?subscription-key=${API_KEY}`;
-// Multiple proxies to try in order
-const PROXIES = [
-  'https://corsproxy.io/?url=',
-  'https://api.allorigins.win/raw?url=',
-  'https://thingproxy.freeboard.io/fetch/',
-];
+// ── Your Cloudflare Worker URL (fill this in after deploying worker.js) ──
+const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // ── Route definitions (colour-coded from the schematic map) ─────────────────
 const ROUTE_DEFS = {
@@ -402,55 +394,7 @@ function toggleRoute(id) {
   updateTramCount();
 }
 
-// ── GTFS-RT protobuf fetch ────────────────────────────────────────────────────
-let proto = null;
-
-const PROTO_DEF = `
-syntax = "proto2";
-message FeedMessage {
-  required FeedHeader header = 1;
-  repeated FeedEntity entity = 2;
-}
-message FeedHeader {
-  required string gtfs_realtime_version = 1;
-  optional uint64 timestamp = 2;
-}
-message FeedEntity {
-  required string id = 1;
-  optional VehiclePosition vehicle = 3;
-}
-message VehiclePosition {
-  optional TripDescriptor trip = 1;
-  optional Position position = 2;
-  optional string vehicle_id = 3;
-  optional VehicleDescriptor vehicle_desc = 4;
-  optional uint64 timestamp = 5;
-  optional string current_stop_id = 6;
-  optional int32 current_stop_sequence = 5001;
-}
-message TripDescriptor {
-  optional string trip_id = 1;
-  optional string route_id = 5;
-  optional int32 direction_id = 6;
-}
-message Position {
-  required float latitude = 1;
-  required float longitude = 2;
-  optional float bearing = 3;
-  optional float speed = 4;
-}
-message VehicleDescriptor {
-  optional string id = 1;
-  optional string label = 2;
-}
-`;
-
-async function loadProto() {
-  if (proto) return proto;
-  const root = protobuf.parse(PROTO_DEF).root;
-  proto = root.lookupType('FeedMessage');
-  return proto;
-}
+// ── Fetch trams from Worker ────────────────────────────────────────────────
 
 async function fetchTrams() {
   const btn = document.getElementById('refresh-btn');
@@ -458,57 +402,14 @@ async function fetchTrams() {
   btn.style.opacity = '0.6';
 
   try {
-    const FeedMessage = await loadProto();
+    const r = await fetch(WORKER_URL);
+    if (!r.ok) throw new Error('Worker returned HTTP ' + r.status);
+    const json = await r.json();
+    if (json.error) throw new Error(json.error);
+    const vehicles = json.vehicles || [];
 
-    // Try each proxy in order until one works
-    let res = null, lastErr = null;
-    for (const proxy of PROXIES) {
-      try {
-        const proxyUrl = proxy + encodeURIComponent(API_URL);
-        const r = await fetch(proxyUrl);
-        if (r.ok) { res = r; break; }
-        lastErr = new Error('HTTP ' + r.status + ' via ' + proxy);
-      } catch (e) { lastErr = e; }
-    }
-    if (!res) throw lastErr || new Error('All proxies failed');
-
-    // Some proxies wrap the response in JSON — unwrap if needed
-    const contentType = res.headers.get('content-type') || '';
-    let bytes;
-    if (contentType.includes('application/json') || contentType.includes('text/')) {
-      const text = await res.text();
-      // allorigins wraps in { contents: "..." } as base64 or raw
-      try {
-        const json = JSON.parse(text);
-        const raw = json.contents || json.body || text;
-        // If it looks like base64
-        if (typeof raw === 'string' && /^[A-Za-z0-9+/=]+$/.test(raw.trim())) {
-          const bin = atob(raw.trim());
-          bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        } else {
-          bytes = new TextEncoder().encode(raw);
-        }
-      } catch {
-        bytes = new TextEncoder().encode(text);
-      }
-    } else {
-      bytes = new Uint8Array(await res.arrayBuffer());
-    }
-
-    // Strip any leading non-protobuf bytes (some proxies prepend BOM or wrapper)
-    let offset = 0;
-    while (offset < bytes.length && bytes[offset] === 0xEF || bytes[offset] === 0xBB || bytes[offset] === 0xBF) offset++;
-    // First valid protobuf byte for FeedMessage field 1 (header) should be 0x0A
-    // Field 2 (entity) = 0x12. Skip until we hit one of these.
-    while (offset < bytes.length && bytes[offset] !== 0x0A && bytes[offset] !== 0x12) {
-      offset++;
-      if (offset > 10) { offset = 0; break; } // give up stripping if too many bytes
-    }
-    const feed = FeedMessage.decode(bytes.slice(offset));
-
-    processFeed(feed);
-    setStatus('live', `${feed.entity.length} vehicles`);
+    processVehicles(vehicles);
+    setStatus('live', vehicles.length + ' vehicles');
     document.getElementById('error-banner').style.display = 'none';
 
     const now = new Date();
@@ -527,69 +428,53 @@ async function fetchTrams() {
   }
 }
 
-function processFeed(feed) {
+function processVehicles(vehicles) {
   const counts = {};
   const seen = new Set();
 
-  feed.entity.forEach(entity => {
-    const v = entity.vehicle;
-    if (!v || !v.position) return;
-
-    const lat = v.position.latitude;
-    const lng = v.position.longitude;
-    const bearing = v.position.bearing || 0;
-    const speed = v.position.speed ? (v.position.speed * 3.6).toFixed(0) : '—';
-
-    const routeId = (v.trip && v.trip.routeId) ? String(v.trip.routeId) : '?';
-    const vehicleId = (v.vehicleDesc && v.vehicleDesc.label) ? v.vehicleDesc.label :
-                      (entity.id || '?');
-    const tripId = (v.trip && v.trip.tripId) ? v.trip.tripId : '—';
-
+  vehicles.forEach(v => {
+    const lat = v.lat, lng = v.lng;
     if (!lat || !lng || lat === 0 || lng === 0) return;
-    // Filter to Melbourne bounding box
     if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
 
-    seen.add(entity.id);
+    const id = v.id || (lat + ',' + lng);
+    const routeId = v.routeId ? String(v.routeId) : '?';
+    const vehicleId = v.vehicleLabel || id;
+    const speed = v.speed ? (v.speed * 3.6).toFixed(0) : '0';
+    const bearing = v.bearing || 0;
+    const tripId = v.tripId || '—';
+
+    seen.add(id);
     counts[routeId] = (counts[routeId] || 0) + 1;
 
-    const def = ROUTE_DEFS[routeId] || { color: '#888', name: 'Unknown route' };
-    const isVisible = activeRoutes.has(routeId);
+    const def = ROUTE_DEFS[routeId] || { color: '#888', name: 'Route ' + routeId };
+    const isVisible = activeRoutes.has(routeId) || !ROUTE_DEFS[routeId];
 
-    if (markers[entity.id]) {
-      // Update existing
-      markers[entity.id].marker.setLatLng([lat, lng]);
-      markers[entity.id].data = { routeId, vehicleId, speed, bearing, tripId, lat, lng };
+    if (markers[id]) {
+      markers[id].marker.setLatLng([lat, lng]);
+      markers[id].data = { routeId, vehicleId, speed, bearing, tripId, lat, lng };
     } else {
-      // Create new marker
       const icon = L.divIcon({
         className: '',
-        html: `<div class="tram-marker" id="vm-${entity.id}" style="background:${def.color};width:26px;height:18px;">${routeId}</div>`,
+        html: '<div class="tram-marker" id="vm-' + id + '" style="background:' + def.color + ';width:26px;height:18px;">' + routeId + '</div>',
         iconSize: [26, 18],
         iconAnchor: [13, 9],
       });
-
       const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
-      marker.on('click', () => showInfo(entity.id));
-
+      marker.on('click', () => showInfo(id));
       if (isVisible) marker.addTo(map);
-
-      markers[entity.id] = { marker, routeId, data: { routeId, vehicleId, speed, bearing, tripId, lat, lng } };
+      markers[id] = { marker, routeId, data: { routeId, vehicleId, speed, bearing, tripId, lat, lng } };
     }
 
-    // Update icon colour if route def changed
-    const el = document.getElementById('vm-' + entity.id);
+    const el = document.getElementById('vm-' + id);
     if (el) el.style.background = def.color;
   });
 
   // Remove stale markers
   Object.keys(markers).forEach(id => {
-    if (!seen.has(id)) {
-      markers[id].marker.remove();
-      delete markers[id];
-    }
+    if (!seen.has(id)) { markers[id].marker.remove(); delete markers[id]; }
   });
 
-  // Update counts
   Object.keys(ROUTE_DEFS).forEach(id => {
     const el = document.getElementById('rc-' + id);
     if (el) el.textContent = counts[id] || 0;
