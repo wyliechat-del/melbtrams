@@ -239,6 +239,7 @@
       <div id="live-badge"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
       <div id="tram-count-badge">— trams</div>
       <div id="clock">--:--:--</div>
+      <button id="map-mode-btn" onclick="toggleMapMode()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;font-family:var(--font-mono);font-size:11px;cursor:pointer;">🗺 Street</button>
       <button id="refresh-btn" onclick="fetchTrams()">↻ Refresh</button>
     </div>
   </div>
@@ -307,8 +308,38 @@ const ROUTE_DEFS = {
 const GROUPS = ['Swanston', 'Elizabeth', 'Collins', 'Bourke', 'La Trobe', 'Flinders', 'Suburban'];
 
 // ── State ────────────────────────────────────────────────────────────────────
-let map, markers = {}, activeRoutes = new Set(Object.keys(ROUTE_DEFS));
+let map, markers = {}, routeLayers = {}, activeRoutes = new Set(Object.keys(ROUTE_DEFS));
 let selectedVehicle = null, refreshInterval = null;
+let mapMode = 'street'; // 'street' or 'transport'
+let tileBase, tileLabels;
+
+// GTFS static shapes URL — we'll approximate routes with known stop coordinates
+// Key stops per route for drawing approximate lines
+const ROUTE_SHAPES = {
+  '1':  [[-37.7558,144.9672],[-37.7679,144.9724],[-37.7851,144.9696],[-37.8000,144.9644],[-37.8056,144.9631],[-37.8165,144.9677],[-37.8359,144.9589],[-37.8475,144.9483]],
+  '3':  [[-37.8000,144.9644],[-37.8056,144.9631],[-37.8165,144.9677],[-37.8474,144.9796],[-37.8598,144.9817],[-37.8697,145.0009],[-37.8769,145.0563]],
+  '5':  [[-37.8000,144.9644],[-37.8056,144.9631],[-37.8165,144.9677],[-37.8474,144.9796],[-37.8598,144.9817],[-37.8685,144.9913]],
+  '6':  [[-37.7716,144.9776],[-37.7947,144.9681],[-37.8056,144.9631],[-37.8165,144.9677],[-37.8390,144.9765],[-37.8519,144.9933]],
+  '11': [[-37.7510,144.9882],[-37.7678,144.9724],[-37.7851,144.9696],[-37.8000,144.9644],[-37.8056,144.9631],[-37.8165,144.9678],[-37.8208,144.9422]],
+  '12': [[-37.8586,144.9722],[-37.8422,144.9596],[-37.8272,144.9579],[-37.8165,144.9636],[-37.8056,144.9631],[-37.7947,144.9681],[-37.7935,145.0754]],
+  '16': [[-37.8000,144.9644],[-37.8056,144.9631],[-37.8165,144.9677],[-37.8269,145.0345],[-37.8080,145.0385],[-37.7935,145.0754],[-37.7683,145.0250]],
+  '19': [[-37.7276,144.9637],[-37.7343,144.9655],[-37.7549,144.9642],[-37.7714,144.9613],[-37.7841,144.9594],[-37.7927,144.9584],[-37.8059,144.9594],[-37.8154,144.9636],[-37.8165,144.9677]],
+  '30': [[-37.8108,144.9598],[-37.8056,144.9631],[-37.8000,144.9644],[-37.7947,144.9681]],
+  '48': [[-37.8165,144.9678],[-37.8056,144.9631],[-37.8000,144.9644],[-37.7935,145.0754],[-37.7683,145.0250]],
+  '57': [[-37.8165,144.9677],[-37.8056,144.9631],[-37.8000,144.9644],[-37.7851,144.9696],[-37.7694,144.8832],[-37.7420,144.9043]],
+  '58': [[-37.7535,144.9458],[-37.7787,144.9510],[-37.8132,144.9570],[-37.8165,144.9612],[-37.8373,144.9791],[-37.8435,145.0300],[-37.8452,145.0725]],
+  '59': [[-37.7358,144.8893],[-37.7503,144.9143],[-37.7683,144.9251],[-37.7823,144.9337],[-37.8077,144.9601],[-37.8154,144.9636]],
+  '64': [[-37.8984,145.0198],[-37.8826,145.0228],[-37.8735,145.0246],[-37.8598,145.0074],[-37.8549,144.9824],[-37.8485,144.9800],[-37.8441,144.9785],[-37.8368,144.9758],[-37.8165,144.9677],[-37.8056,144.9631],[-37.8000,144.9644]],
+  '67': [[-37.8911,145.0541],[-37.8839,144.9976],[-37.8356,144.9751],[-37.8327,144.9721],[-37.8238,144.9703],[-37.8165,144.9677],[-37.8056,144.9631],[-37.8000,144.9644]],
+  '70': [[-37.8361,145.0996],[-37.8253,145.0257],[-37.8221,144.9831],[-37.8186,144.9632],[-37.8165,144.9598],[-37.8155,144.9451],[-37.8152,144.9368],[-37.8059,144.9782],[-37.7961,144.9848],[-37.7720,144.9985],[-37.6958,145.0594]],
+  '72': [[-37.8332,144.9726],[-37.8515,145.0293],[-37.8741,145.0376],[-37.8755,145.0395]],
+  '75': [[-37.8475,144.9795],[-37.8221,144.9831],[-37.8186,144.9632],[-37.8165,144.9598],[-37.8155,144.9451],[-37.8506,145.0988],[-37.8527,145.1527],[-37.8559,145.1780]],
+  '78': [[-37.8333,144.9967],[-37.8466,144.9941],[-37.8479,144.9939],[-37.8685,144.9903],[-37.8715,144.9898]],
+  '82': [[-37.7971,144.8975],[-37.7693,144.8832],[-37.7362,144.8895]],
+  '86': [[-37.8059,144.9782],[-37.7961,144.9848],[-37.7720,144.9985],[-37.7640,144.9997],[-37.6964,145.0594],[-37.6958,145.0594],[-37.6941,145.0594]],
+  '96': [[-37.8586,144.9722],[-37.8421,144.9596],[-37.8233,144.9562],[-37.8165,144.9636],[-37.8056,144.9631],[-37.7947,144.9681],[-37.7639,144.9626],[-37.7277,144.8906]],
+  '109':[[-37.8377,144.9361],[-37.8263,144.9559],[-37.8165,144.9636],[-37.8113,145.0074],[-37.8100,145.0576],[-37.8177,145.1218],[-37.8135,145.0869]],
+};
 
 // ── Map init ─────────────────────────────────────────────────────────────────
 function initMap() {
@@ -319,13 +350,12 @@ function initMap() {
     attributionControl: true,
   });
 
-  // CartoDB Positron — clean minimal base, great for transit overlays
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+  // Street mode: dark CartoDB
+  tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
     attribution: '© OpenStreetMap contributors © CARTO',
     subdomains: 'abcd', maxZoom: 19,
   }).addTo(map);
-  // Labels on top so tram markers don't obscure street names
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+  tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
     subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
   }).addTo(map);
 
@@ -335,6 +365,58 @@ function initMap() {
     { color: '#4ade80', weight: 1.5, fillColor: '#4ade80', fillOpacity: 0.06, dashArray: '4 4' }
   ).addTo(map);
   ftz.bindTooltip('Free Tram Zone', { permanent: false, direction: 'center', className: 'ftz-tooltip' });
+
+  drawRouteLines();
+}
+
+// ── Map mode toggle ───────────────────────────────────────────────────────────
+function toggleMapMode() {
+  mapMode = mapMode === 'street' ? 'transport' : 'street';
+  const btn = document.getElementById('map-mode-btn');
+
+  map.removeLayer(tileBase);
+  map.removeLayer(tileLabels);
+
+  if (mapMode === 'street') {
+    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+    }).addTo(map);
+    btn.textContent = '🗺 Street';
+    // Thicker lines on dark map
+    Object.entries(routeLayers).forEach(([id, layer]) => layer.setStyle({ weight: 3, opacity: 0.8 }));
+  } else {
+    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+    }).addTo(map);
+    btn.textContent = '🚋 Transport';
+    // Thicker, more visible lines on light map
+    Object.entries(routeLayers).forEach(([id, layer]) => layer.setStyle({ weight: 5, opacity: 0.9 }));
+  }
+  // Bring labels back on top
+  tileLabels.bringToFront();
+}
+
+// ── Draw route lines ──────────────────────────────────────────────────────────
+function drawRouteLines() {
+  Object.entries(ROUTE_SHAPES).forEach(([id, coords]) => {
+    const def = ROUTE_DEFS[id];
+    if (!def) return;
+    const line = L.polyline(coords, {
+      color: def.color,
+      weight: 3,
+      opacity: 0.8,
+      lineJoin: 'round',
+      lineCap: 'round',
+    }).addTo(map);
+    line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
+    routeLayers[id] = line;
+  });
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -381,16 +463,24 @@ function toggleRoute(id) {
   if (activeRoutes.has(id)) activeRoutes.delete(id);
   else activeRoutes.add(id);
 
-  document.getElementById('route-item-' + id)?.classList.toggle('dimmed', !activeRoutes.has(id));
-  document.getElementById('pill-' + id)?.classList.toggle('dimmed', !activeRoutes.has(id));
+  const on = activeRoutes.has(id);
+  document.getElementById('route-item-' + id)?.classList.toggle('dimmed', !on);
+  document.getElementById('pill-' + id)?.classList.toggle('dimmed', !on);
 
-  // Show/hide markers
+  // Show/hide tram markers
   Object.values(markers).forEach(m => {
     if (m.routeId === id) {
-      if (activeRoutes.has(id)) m.marker.addTo(map);
+      if (on) m.marker.addTo(map);
       else m.marker.remove();
     }
   });
+
+  // Show/hide route line
+  if (routeLayers[id]) {
+    if (on) routeLayers[id].addTo(map);
+    else map.removeLayer(routeLayers[id]);
+  }
+
   updateTramCount();
 }
 
