@@ -167,7 +167,6 @@
 
   /* ── Leaflet overrides ── */
   .leaflet-container { background: #0d1220; }
-  .leaflet-tile { filter: brightness(0.55) saturate(0.4) hue-rotate(180deg); }
   .leaflet-control-zoom a {
     background: var(--surface) !important; color: var(--text) !important;
     border-color: var(--border) !important;
@@ -275,9 +274,14 @@
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const API_KEY = 'd6e57cef-0084-44d3-892b-a3bee1281805';
-const API_URL = 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/vehicle-positions';
-// CORS proxy — free, no signup needed for personal use
-const PROXY = 'https://corsproxy.io/?url=';
+// Key passed as query param (more proxy-friendly than headers)
+const API_URL = `https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/vehicle-positions?subscription-key=${API_KEY}`;
+// Multiple proxies to try in order
+const PROXIES = [
+  'https://corsproxy.io/?url=',
+  'https://api.allorigins.win/raw?url=',
+  'https://thingproxy.freeboard.io/fetch/',
+];
 
 // ── Route definitions (colour-coded from the schematic map) ─────────────────
 const ROUTE_DEFS = {
@@ -323,9 +327,14 @@ function initMap() {
     attributionControl: true,
   });
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors',
-    maxZoom: 19,
+  // CartoDB Positron — clean minimal base, great for transit overlays
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap contributors © CARTO',
+    subdomains: 'abcd', maxZoom: 19,
+  }).addTo(map);
+  // Labels on top so tram markers don't obscure street names
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
   }).addTo(map);
 
   // Free tram zone rectangle
@@ -451,12 +460,17 @@ async function fetchTrams() {
   try {
     const FeedMessage = await loadProto();
 
-    const url = PROXY + encodeURIComponent(API_URL);
-    const res = await fetch(url, {
-      headers: { 'KeyId': API_KEY }
-    });
-
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Try each proxy in order until one works
+    let res = null, lastErr = null;
+    for (const proxy of PROXIES) {
+      try {
+        const proxyUrl = proxy + encodeURIComponent(API_URL);
+        const r = await fetch(proxyUrl);
+        if (r.ok) { res = r; break; }
+        lastErr = new Error('HTTP ' + r.status + ' via ' + proxy);
+      } catch (e) { lastErr = e; }
+    }
+    if (!res) throw lastErr || new Error('All proxies failed');
 
     const buffer = await res.arrayBuffer();
     const feed = FeedMessage.decode(new Uint8Array(buffer));
