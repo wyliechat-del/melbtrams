@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Melbourne Trams</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0b0f1a;
+    --surface: #111827;
+    --surface2: #1a2235;
+    --border: rgba(255,255,255,0.07);
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #38bdf8;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --font-ui: 'Space Grotesk', sans-serif;
+    --font-mono: 'DM Mono', monospace;
+  }
+
+  html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font-ui); }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  #topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; height: 52px; flex-shrink: 0;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    z-index: 1000;
+  }
+  #topbar .logo { display: flex; align-items: center; gap: 10px; }
+  #topbar .logo-icon {
+    width: 28px; height: 28px; background: var(--accent);
+    border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600; color: #0b0f1a; flex-shrink: 0;
+  }
+  #topbar h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+  #topbar .subtitle { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+
+  #status-group { display: flex; align-items: center; gap: 12px; }
+  #live-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; font-family: var(--font-mono); color: var(--green);
+  }
+  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.85)} }
+
+  #tram-count-badge {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 3px 10px; border-radius: 20px; color: var(--accent);
+  }
+
+  #clock { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+  /* ── Main content ── */
+  #main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: 260px; flex-shrink: 0;
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  #sidebar-header {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); font-family: var(--font-mono);
+  }
+
+  #route-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+  #route-list::-webkit-scrollbar { width: 4px; }
+  #route-list::-webkit-scrollbar-track { background: transparent; }
+  #route-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .route-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 14px; cursor: pointer; transition: background 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .route-item:hover { background: var(--surface2); }
+  .route-item.active { background: var(--surface2); border-left-color: var(--color); }
+  .route-item.dimmed { opacity: 0.3; }
+
+  .route-num {
+    width: 32px; height: 20px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; font-family: var(--font-mono);
+    flex-shrink: 0; color: #fff;
+  }
+  .route-name { font-size: 12px; color: var(--text); flex: 1; line-height: 1.3; }
+  .route-tram-count {
+    font-size: 10px; font-family: var(--font-mono); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 1px 6px; border-radius: 10px; min-width: 24px; text-align: center;
+  }
+
+  #sidebar-footer {
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--muted); font-family: var(--font-mono);
+    line-height: 1.6;
+  }
+
+  /* ── Map ── */
+  #map { flex: 1; }
+
+  /* ── Bottom bar (mobile) ── */
+  #bottombar {
+    display: none;
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 8px 12px; gap: 8px; flex-wrap: wrap; align-items: center;
+    z-index: 1000; flex-shrink: 0;
+  }
+
+  /* ── Info panel (floating) ── */
+  #info-panel {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 18px;
+    font-size: 13px; z-index: 2000; min-width: 280px; max-width: 380px;
+    display: none; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    backdrop-filter: blur(8px);
+  }
+  #info-panel.visible { display: block; }
+  #info-close {
+    position: absolute; top: 8px; right: 12px;
+    background: none; border: none; color: var(--muted);
+    font-size: 18px; cursor: pointer; line-height: 1;
+  }
+  .info-row { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+  .info-label { font-size: 10px; font-family: var(--font-mono); color: var(--muted); width: 70px; flex-shrink: 0; }
+  .info-value { font-size: 13px; color: var(--text); }
+  .info-route-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 22px; border-radius: 5px;
+    font-weight: 700; font-size: 13px; font-family: var(--font-mono); color: #fff;
+    margin-right: 6px;
+  }
+
+  /* ── Refresh button ── */
+  #refresh-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--accent); padding: 5px 12px; border-radius: 6px;
+    font-family: var(--font-mono); font-size: 11px; cursor: pointer;
+    transition: background 0.15s; white-space: nowrap;
+  }
+  #refresh-btn:hover { background: rgba(56,189,248,0.1); }
+  #refresh-btn.spinning { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Error banner ── */
+  #error-banner {
+    display: none; padding: 8px 16px; background: rgba(248,113,113,0.15);
+    border-bottom: 1px solid rgba(248,113,113,0.3);
+    font-size: 12px; color: var(--red); font-family: var(--font-mono);
+    text-align: center; z-index: 999;
+  }
+
+  /* ── Leaflet overrides ── */
+  .leaflet-container { background: #0d1220; }
+  .leaflet-tile { filter: brightness(0.55) saturate(0.4) hue-rotate(180deg); }
+  .leaflet-control-zoom a {
+    background: var(--surface) !important; color: var(--text) !important;
+    border-color: var(--border) !important;
+  }
+  .leaflet-control-attribution {
+    background: rgba(11,15,26,0.7) !important; color: var(--muted) !important;
+    font-size: 9px !important;
+  }
+  .leaflet-control-attribution a { color: var(--muted) !important; }
+
+  .tram-marker {
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 5px; font-weight: 700; font-family: 'DM Mono', monospace;
+    font-size: 10px; color: #fff; border: 2px solid rgba(255,255,255,0.3);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.6); cursor: pointer;
+    transition: transform 0.2s;
+  }
+  .tram-marker:hover { transform: scale(1.3); z-index: 9999 !important; }
+  .tram-marker.selected {
+    border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,0.4);
+    transform: scale(1.4); z-index: 9999 !important;
+  }
+
+  /* ── Mobile responsive ── */
+  @media (max-width: 640px) {
+    #sidebar { display: none; }
+    #bottombar { display: flex; }
+    #info-panel { bottom: 80px; left: 10px; right: 10px; transform: none; min-width: unset; max-width: unset; }
+  }
+
+  /* ── Route group headers ── */
+  .route-group-header {
+    padding: 8px 14px 4px;
+    font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--muted); font-family: var(--font-mono);
+    border-top: 1px solid var(--border); margin-top: 4px;
+  }
+  .route-group-header:first-child { border-top: none; margin-top: 0; }
+
+  /* mobile pills */
+  .mobile-pill {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 22px; border-radius: 5px;
+    font-weight: 700; font-size: 11px; font-family: var(--font-mono);
+    color: #fff; cursor: pointer; opacity: 1; transition: opacity 0.2s;
+    border: 2px solid rgba(255,255,255,0.2);
+  }
+  .mobile-pill.dimmed { opacity: 0.25; }
+
+  #mobile-tram-count {
+    font-family: var(--font-mono); font-size: 11px; color: var(--accent);
+    margin-left: auto;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div class="logo">
+      <div class="logo-icon">T</div>
+      <div>
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <h1>Melbourne Trams</h1>
+          <span class="subtitle">LIVE</span>
+        </div>
+      </div>
+    </div>
+    <div id="status-group">
+      <div id="live-badge"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
+      <div id="tram-count-badge">— trams</div>
+      <div id="clock">--:--:--</div>
+      <button id="refresh-btn" onclick="fetchTrams()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div id="error-banner" id="error-banner"></div>
+
+  <div id="main">
+    <div id="sidebar">
+      <div id="sidebar-header">Routes</div>
+      <div id="route-list"></div>
+      <div id="sidebar-footer">
+        Data: Transport Victoria<br>
+        CC BY 4.0 · Updates every 60s<br>
+        <span id="last-updated">—</span>
+      </div>
+    </div>
+    <div id="map"></div>
+  </div>
+
+  <div id="bottombar">
+    <div id="mobile-pills"></div>
+    <div id="mobile-tram-count">— trams</div>
+  </div>
+</div>
+
+<div id="info-panel">
+  <button id="info-close" onclick="closeInfo()">×</button>
+  <div id="info-content"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/protobufjs@7.2.5/dist/protobuf.min.js"></script>
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const API_KEY = 'd6e57cef-0084-44d3-892b-a3bee1281805';
+const API_URL = 'https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/tram/vehicle-positions';
+// CORS proxy — free, no signup needed for personal use
+const PROXY = 'https://corsproxy.io/?url=';
+
+// ── Route definitions (colour-coded from the schematic map) ─────────────────
+const ROUTE_DEFS = {
+  '1':   { name: 'East Coburg – South Melbourne Beach', color: '#E53E3E', group: 'Swanston' },
+  '3':   { name: 'Melbourne Uni – East Malvern (Wkdays)', color: '#E53E3E', group: 'Swanston' },
+  '3a':  { name: 'Melbourne Uni – East Malvern (Wknds)', color: '#E53E3E', group: 'Swanston' },
+  '5':   { name: 'Melbourne Uni – Malvern', color: '#E53E3E', group: 'Swanston' },
+  '6':   { name: 'Moreland – Glen Iris', color: '#38A169', group: 'Swanston' },
+  '16':  { name: 'Melbourne Uni – Kew', color: '#3182CE', group: 'Swanston' },
+  '64':  { name: 'Melbourne Uni – East Brighton', color: '#00B5D8', group: 'Swanston' },
+  '67':  { name: 'Melbourne Uni – Carnegie', color: '#38A169', group: 'Swanston' },
+  '72':  { name: 'Melbourne Uni – Camberwell', color: '#3182CE', group: 'Swanston' },
+  '19':  { name: 'North Coburg – Flinders St', color: '#E53E3E', group: 'Elizabeth' },
+  '57':  { name: 'West Maribyrnong – Flinders St', color: '#E53E3E', group: 'Elizabeth' },
+  '58':  { name: 'West Coburg – Toorak', color: '#805AD5', group: 'Elizabeth' },
+  '59':  { name: 'Airport West – Flinders St', color: '#E53E3E', group: 'Elizabeth' },
+  '11':  { name: 'West Preston – Victoria Harbour', color: '#805AD5', group: 'Collins' },
+  '12':  { name: 'St Kilda / Fitzroy St – Victoria Gardens', color: '#D53F8C', group: 'Collins' },
+  '48':  { name: 'North Balwyn – Victoria Harbour', color: '#805AD5', group: 'Collins' },
+  '109': { name: 'Box Hill – Port Melbourne', color: '#744210', group: 'Collins' },
+  '86':  { name: 'Bundoora RMIT – Waterfront City', color: '#2F855A', group: 'Bourke' },
+  '96':  { name: 'East Brunswick – St Kilda Beach', color: '#D53F8C', group: 'Bourke' },
+  '30':  { name: "St Vincent's Plaza – Etihad Stadium", color: '#DD6B20', group: 'La Trobe' },
+  '35':  { name: 'City Circle', color: '#DD6B20', group: 'La Trobe' },
+  '70':  { name: 'Wattle Park – Waterfront City', color: '#D69E2E', group: 'Flinders' },
+  '75':  { name: 'Vermont South – Etihad Stadium', color: '#D69E2E', group: 'Flinders' },
+  '78':  { name: 'North Richmond – Balaclava', color: '#F6AD55', group: 'Suburban' },
+  '82':  { name: 'Moonee Ponds – Footscray', color: '#F6AD55', group: 'Suburban' },
+};
+
+const GROUPS = ['Swanston', 'Elizabeth', 'Collins', 'Bourke', 'La Trobe', 'Flinders', 'Suburban'];
+
+// ── State ────────────────────────────────────────────────────────────────────
+let map, markers = {}, activeRoutes = new Set(Object.keys(ROUTE_DEFS));
+let selectedVehicle = null, refreshInterval = null;
+
+// ── Map init ─────────────────────────────────────────────────────────────────
+function initMap() {
+  map = L.map('map', {
+    center: [-37.814, 144.963],
+    zoom: 13,
+    zoomControl: true,
+    attributionControl: true,
+  });
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+  }).addTo(map);
+
+  // Free tram zone rectangle
+  const ftz = L.rectangle(
+    [[-37.8080, 144.9530], [-37.8230, 144.9760]],
+    { color: '#4ade80', weight: 1.5, fillColor: '#4ade80', fillOpacity: 0.06, dashArray: '4 4' }
+  ).addTo(map);
+  ftz.bindTooltip('Free Tram Zone', { permanent: false, direction: 'center', className: 'ftz-tooltip' });
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+function buildSidebar() {
+  const list = document.getElementById('route-list');
+  const pills = document.getElementById('mobile-pills');
+  list.innerHTML = ''; pills.innerHTML = '';
+
+  GROUPS.forEach(group => {
+    const routes = Object.entries(ROUTE_DEFS).filter(([,d]) => d.group === group);
+    if (!routes.length) return;
+
+    const header = document.createElement('div');
+    header.className = 'route-group-header';
+    header.textContent = group;
+    list.appendChild(header);
+
+    routes.forEach(([id, def]) => {
+      const item = document.createElement('div');
+      item.className = 'route-item' + (activeRoutes.has(id) ? '' : ' dimmed');
+      item.id = 'route-item-' + id;
+      item.style.setProperty('--color', def.color);
+      item.innerHTML = `
+        <div class="route-num" style="background:${def.color}">${id}</div>
+        <div class="route-name">${def.name}</div>
+        <div class="route-tram-count" id="rc-${id}">0</div>
+      `;
+      item.addEventListener('click', () => toggleRoute(id));
+      list.appendChild(item);
+
+      // Mobile pill
+      const pill = document.createElement('div');
+      pill.className = 'mobile-pill' + (activeRoutes.has(id) ? '' : ' dimmed');
+      pill.id = 'pill-' + id;
+      pill.style.background = def.color;
+      pill.textContent = id;
+      pill.addEventListener('click', () => toggleRoute(id));
+      pills.appendChild(pill);
+    });
+  });
+}
+
+function toggleRoute(id) {
+  if (activeRoutes.has(id)) activeRoutes.delete(id);
+  else activeRoutes.add(id);
+
+  document.getElementById('route-item-' + id)?.classList.toggle('dimmed', !activeRoutes.has(id));
+  document.getElementById('pill-' + id)?.classList.toggle('dimmed', !activeRoutes.has(id));
+
+  // Show/hide markers
+  Object.values(markers).forEach(m => {
+    if (m.routeId === id) {
+      if (activeRoutes.has(id)) m.marker.addTo(map);
+      else m.marker.remove();
+    }
+  });
+  updateTramCount();
+}
+
+// ── GTFS-RT protobuf fetch ────────────────────────────────────────────────────
+let proto = null;
+
+const PROTO_DEF = `
+syntax = "proto2";
+message FeedMessage {
+  required FeedHeader header = 1;
+  repeated FeedEntity entity = 2;
+}
+message FeedHeader {
+  required string gtfs_realtime_version = 1;
+  optional uint64 timestamp = 2;
+}
+message FeedEntity {
+  required string id = 1;
+  optional VehiclePosition vehicle = 3;
+}
+message VehiclePosition {
+  optional TripDescriptor trip = 1;
+  optional Position position = 2;
+  optional string vehicle_id = 3;
+  optional VehicleDescriptor vehicle_desc = 4;
+  optional uint64 timestamp = 5;
+  optional string current_stop_id = 6;
+  optional int32 current_stop_sequence = 5001;
+}
+message TripDescriptor {
+  optional string trip_id = 1;
+  optional string route_id = 5;
+  optional int32 direction_id = 6;
+}
+message Position {
+  required float latitude = 1;
+  required float longitude = 2;
+  optional float bearing = 3;
+  optional float speed = 4;
+}
+message VehicleDescriptor {
+  optional string id = 1;
+  optional string label = 2;
+}
+`;
+
+async function loadProto() {
+  if (proto) return proto;
+  const root = protobuf.parse(PROTO_DEF).root;
+  proto = root.lookupType('FeedMessage');
+  return proto;
+}
+
+async function fetchTrams() {
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = '↻ Loading…';
+  btn.style.opacity = '0.6';
+
+  try {
+    const FeedMessage = await loadProto();
+
+    const url = PROXY + encodeURIComponent(API_URL);
+    const res = await fetch(url, {
+      headers: { 'KeyId': API_KEY }
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const buffer = await res.arrayBuffer();
+    const feed = FeedMessage.decode(new Uint8Array(buffer));
+
+    processFeed(feed);
+    setStatus('live', `${feed.entity.length} vehicles`);
+    document.getElementById('error-banner').style.display = 'none';
+
+    const now = new Date();
+    document.getElementById('last-updated').textContent =
+      'Updated ' + now.toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+
+  } catch (err) {
+    console.error('Fetch error:', err);
+    setStatus('error', 'Connection error');
+    const eb = document.getElementById('error-banner');
+    eb.style.display = 'block';
+    eb.textContent = `⚠ Could not fetch live data: ${err.message}. Retrying in 60s…`;
+  } finally {
+    btn.textContent = '↻ Refresh';
+    btn.style.opacity = '1';
+  }
+}
+
+function processFeed(feed) {
+  const counts = {};
+  const seen = new Set();
+
+  feed.entity.forEach(entity => {
+    const v = entity.vehicle;
+    if (!v || !v.position) return;
+
+    const lat = v.position.latitude;
+    const lng = v.position.longitude;
+    const bearing = v.position.bearing || 0;
+    const speed = v.position.speed ? (v.position.speed * 3.6).toFixed(0) : '—';
+
+    const routeId = (v.trip && v.trip.routeId) ? String(v.trip.routeId) : '?';
+    const vehicleId = (v.vehicleDesc && v.vehicleDesc.label) ? v.vehicleDesc.label :
+                      (entity.id || '?');
+    const tripId = (v.trip && v.trip.tripId) ? v.trip.tripId : '—';
+
+    if (!lat || !lng || lat === 0 || lng === 0) return;
+    // Filter to Melbourne bounding box
+    if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
+
+    seen.add(entity.id);
+    counts[routeId] = (counts[routeId] || 0) + 1;
+
+    const def = ROUTE_DEFS[routeId] || { color: '#888', name: 'Unknown route' };
+    const isVisible = activeRoutes.has(routeId);
+
+    if (markers[entity.id]) {
+      // Update existing
+      markers[entity.id].marker.setLatLng([lat, lng]);
+      markers[entity.id].data = { routeId, vehicleId, speed, bearing, tripId, lat, lng };
+    } else {
+      // Create new marker
+      const icon = L.divIcon({
+        className: '',
+        html: `<div class="tram-marker" id="vm-${entity.id}" style="background:${def.color};width:26px;height:18px;">${routeId}</div>`,
+        iconSize: [26, 18],
+        iconAnchor: [13, 9],
+      });
+
+      const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
+      marker.on('click', () => showInfo(entity.id));
+
+      if (isVisible) marker.addTo(map);
+
+      markers[entity.id] = { marker, routeId, data: { routeId, vehicleId, speed, bearing, tripId, lat, lng } };
+    }
+
+    // Update icon colour if route def changed
+    const el = document.getElementById('vm-' + entity.id);
+    if (el) el.style.background = def.color;
+  });
+
+  // Remove stale markers
+  Object.keys(markers).forEach(id => {
+    if (!seen.has(id)) {
+      markers[id].marker.remove();
+      delete markers[id];
+    }
+  });
+
+  // Update counts
+  Object.keys(ROUTE_DEFS).forEach(id => {
+    const el = document.getElementById('rc-' + id);
+    if (el) el.textContent = counts[id] || 0;
+  });
+
+  updateTramCount();
+}
+
+function updateTramCount() {
+  const visible = Object.values(markers).filter(m => activeRoutes.has(m.routeId)).length;
+  document.getElementById('tram-count-badge').textContent = `${visible} trams`;
+  document.getElementById('mobile-tram-count').textContent = `${visible} trams`;
+}
+
+function showInfo(vehicleId) {
+  const m = markers[vehicleId];
+  if (!m) return;
+  const d = m.data;
+  const def = ROUTE_DEFS[d.routeId] || { color: '#888', name: 'Unknown route' };
+
+  selectedVehicle = vehicleId;
+  document.querySelectorAll('.tram-marker').forEach(el => el.classList.remove('selected'));
+  document.getElementById('vm-' + vehicleId)?.classList.add('selected');
+
+  document.getElementById('info-content').innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:12px;">
+      <span class="info-route-badge" style="background:${def.color}">${d.routeId}</span>
+      <span style="font-size:13px;font-weight:600;">${def.name}</span>
+    </div>
+    <div class="info-row"><span class="info-label">Vehicle</span><span class="info-value" style="font-family:var(--font-mono)">${d.vehicleId}</span></div>
+    <div class="info-row"><span class="info-label">Speed</span><span class="info-value" style="font-family:var(--font-mono)">${d.speed} km/h</span></div>
+    <div class="info-row"><span class="info-label">Bearing</span><span class="info-value" style="font-family:var(--font-mono)">${Math.round(d.bearing)}°</span></div>
+    <div class="info-row"><span class="info-label">Position</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}</span></div>
+  `;
+
+  document.getElementById('info-panel').classList.add('visible');
+  map.panTo([d.lat, d.lng], { animate: true });
+}
+
+function closeInfo() {
+  document.getElementById('info-panel').classList.remove('visible');
+  document.querySelectorAll('.tram-marker').forEach(el => el.classList.remove('selected'));
+  selectedVehicle = null;
+}
+
+function setStatus(state, text) {
+  const badge = document.getElementById('live-badge');
+  const dot = badge.querySelector('.pulse');
+  const span = document.getElementById('status-text');
+  span.textContent = text;
+  if (state === 'live') { dot.style.background = 'var(--green)'; }
+  else if (state === 'error') { dot.style.background = 'var(--red)'; }
+  else { dot.style.background = 'var(--amber)'; }
+}
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initMap();
+  buildSidebar();
+  fetchTrams();
+  setInterval(updateClock, 1000);
+  setInterval(fetchTrams, 60000);
+  updateClock();
+});
+</script>
+</body>
+</html>
