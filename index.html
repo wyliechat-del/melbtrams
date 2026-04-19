@@ -89,7 +89,10 @@
   }
   .route-item:hover { background: var(--surface2); }
   .route-item.active { background: var(--surface2); border-left-color: var(--color); }
-  .route-item.dimmed { opacity: 0.3; }
+  .route-item.dimmed { opacity: 1; }
+  .route-item.dimmed .route-name { color: var(--muted); text-decoration: line-through; }
+  .route-item.dimmed .route-num { opacity: 0.35; }
+  .route-item.dimmed .route-tram-count { opacity: 0.35; }
 
   .route-num {
     width: 32px; height: 20px; border-radius: 4px;
@@ -98,6 +101,20 @@
     flex-shrink: 0; color: #fff;
   }
   .route-name { font-size: 12px; color: var(--text); flex: 1; line-height: 1.3; }
+
+  /* Toggle switch */
+  .route-toggle {
+    flex-shrink: 0; width: 28px; height: 16px; border-radius: 8px;
+    background: var(--muted); position: relative; transition: background 0.2s;
+    cursor: pointer;
+  }
+  .route-toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 12px; height: 12px; border-radius: 50%; background: #fff;
+    transition: transform 0.2s;
+  }
+  .route-item:not(.dimmed) .route-toggle { background: var(--color); }
+  .route-item:not(.dimmed) .route-toggle::after { transform: translateX(12px); }
   .route-tram-count {
     font-size: 10px; font-family: var(--font-mono); color: var(--muted);
     background: var(--surface); border: 1px solid var(--border);
@@ -443,16 +460,30 @@ function drawRouteLines() {
   });
 }
 
+// Global stop layer — all stops in one layer group for easy toggle
+let stopLayer = null;
+
 function drawStopDots() {
   if (!TRAM_NETWORK) return;
-  // Group stops by which routes serve them (approximate by proximity)
+  stopLayer = L.layerGroup();
   TRAM_NETWORK.stops.forEach(stop => {
-    const dot = L.circleMarker(stop.p, {
+    L.circleMarker(stop.p, {
       radius: 3, color: '#fff', weight: 1.5,
       fillColor: '#64748b', fillOpacity: 1,
-      pane: 'shadowPane',
-    }).addTo(map).bindTooltip(stop.n, { sticky: true, direction: 'top' });
+    }).bindTooltip(stop.n, { sticky: true, direction: 'top' })
+      .addTo(stopLayer);
   });
+  stopLayer.addTo(map);
+}
+
+function updateStopVisibility() {
+  // Show stop if at least one active route is on
+  // Since stops aren't tagged by route in this dataset, we show all when
+  // any route is on, hide all only when ALL routes are off
+  if (!stopLayer) return;
+  const anyOn = activeRoutes.size > 0;
+  if (anyOn) stopLayer.addTo(map);
+  else map.removeLayer(stopLayer);
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -476,6 +507,7 @@ function buildSidebar() {
       item.id = 'route-item-' + id;
       item.style.setProperty('--color', def.color);
       item.innerHTML = `
+        <div class="route-toggle" title="Toggle route ${id}"></div>
         <div class="route-num" style="background:${def.color}">${id}</div>
         <div class="route-name">${def.name}</div>
         <div class="route-tram-count" id="rc-${id}">0</div>
@@ -530,6 +562,7 @@ function toggleRoute(id) {
   }
 
   updateTramCount();
+  updateStopVisibility();
 }
 
 // ── Fetch trams from Worker ────────────────────────────────────────────────
