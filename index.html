@@ -472,8 +472,40 @@ async function fetchTrams() {
     }
     if (!res) throw lastErr || new Error('All proxies failed');
 
-    const buffer = await res.arrayBuffer();
-    const feed = FeedMessage.decode(new Uint8Array(buffer));
+    // Some proxies wrap the response in JSON — unwrap if needed
+    const contentType = res.headers.get('content-type') || '';
+    let bytes;
+    if (contentType.includes('application/json') || contentType.includes('text/')) {
+      const text = await res.text();
+      // allorigins wraps in { contents: "..." } as base64 or raw
+      try {
+        const json = JSON.parse(text);
+        const raw = json.contents || json.body || text;
+        // If it looks like base64
+        if (typeof raw === 'string' && /^[A-Za-z0-9+/=]+$/.test(raw.trim())) {
+          const bin = atob(raw.trim());
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        } else {
+          bytes = new TextEncoder().encode(raw);
+        }
+      } catch {
+        bytes = new TextEncoder().encode(text);
+      }
+    } else {
+      bytes = new Uint8Array(await res.arrayBuffer());
+    }
+
+    // Strip any leading non-protobuf bytes (some proxies prepend BOM or wrapper)
+    let offset = 0;
+    while (offset < bytes.length && bytes[offset] === 0xEF || bytes[offset] === 0xBB || bytes[offset] === 0xBF) offset++;
+    // First valid protobuf byte for FeedMessage field 1 (header) should be 0x0A
+    // Field 2 (entity) = 0x12. Skip until we hit one of these.
+    while (offset < bytes.length && bytes[offset] !== 0x0A && bytes[offset] !== 0x12) {
+      offset++;
+      if (offset > 10) { offset = 0; break; } // give up stripping if too many bytes
+    }
+    const feed = FeedMessage.decode(bytes.slice(offset));
 
     processFeed(feed);
     setStatus('live', `${feed.entity.length} vehicles`);
