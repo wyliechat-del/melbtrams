@@ -438,7 +438,12 @@ function processVehicles(vehicles) {
     if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
 
     const id = v.id || (lat + ',' + lng);
-    const routeId = v.routeId ? String(v.routeId) : '?';
+    // Route IDs come as "aus:vic:vic-03-75:" — extract just the number
+    let routeId = '?';
+    if (v.routeId) {
+      const m = v.routeId.match(/vic-03-(\w+):?$/);
+      routeId = m ? m[1] : String(v.routeId);
+    }
     const vehicleId = v.vehicleLabel || id;
     const speed = v.speed ? (v.speed * 3.6).toFixed(0) : '0';
     const bearing = v.bearing || 0;
