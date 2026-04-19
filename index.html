@@ -220,6 +220,30 @@
     font-family: var(--font-mono); font-size: 11px; color: var(--accent);
     margin-left: auto;
   }
+
+  .sidebar-section { border-bottom: 1px solid var(--border); }
+  .sidebar-section-label {
+    padding: 10px 14px 6px;
+    font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); font-family: var(--font-mono);
+  }
+
+  .map-type-btn {
+    flex: 1; padding: 7px 0; border-radius: 6px; font-size: 12px; font-weight: 500;
+    font-family: var(--font-ui); cursor: pointer; transition: all 0.15s;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .map-type-btn.active {
+    background: var(--accent); border-color: var(--accent); color: #0b0f1a;
+  }
+
+  .all-btn {
+    flex: 1; padding: 5px 0; border-radius: 6px; font-size: 11px;
+    font-family: var(--font-mono); cursor: pointer;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    transition: background 0.15s;
+  }
+  .all-btn:hover { background: rgba(255,255,255,0.1); }
 </style>
 </head>
 <body>
@@ -239,7 +263,6 @@
       <div id="live-badge"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
       <div id="tram-count-badge">— trams</div>
       <div id="clock">--:--:--</div>
-      <button id="map-mode-btn" onclick="toggleMapMode()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;font-family:var(--font-mono);font-size:11px;cursor:pointer;">🗺 Street</button>
       <button id="refresh-btn" onclick="fetchTrams()">↻ Refresh</button>
     </div>
   </div>
@@ -248,11 +271,24 @@
 
   <div id="main">
     <div id="sidebar">
-      <div id="sidebar-header">Routes</div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Map Type</div>
+        <div style="display:flex;gap:6px;padding:0 14px 10px;">
+          <button id="btn-street" class="map-type-btn active" onclick="setMapMode('street')">Street</button>
+          <button id="btn-transit" class="map-type-btn" onclick="setMapMode('transport')">Transit</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Routes</div>
+        <div style="display:flex;gap:6px;padding:0 14px 8px;">
+          <button class="all-btn" onclick="setAllRoutes(true)">All On</button>
+          <button class="all-btn" onclick="setAllRoutes(false)">All Off</button>
+        </div>
+      </div>
       <div id="route-list"></div>
       <div id="sidebar-footer">
         Data: Transport Victoria<br>
-        CC BY 4.0 · Updates every 60s<br>
+        CC BY 4.0 · Refresh: 30s<br>
         <span id="last-updated">—</span>
       </div>
     </div>
@@ -369,24 +405,23 @@ function initMap() {
   drawRouteLines();
 }
 
-// ── Map mode toggle ───────────────────────────────────────────────────────────
-function toggleMapMode() {
-  mapMode = mapMode === 'street' ? 'transport' : 'street';
-  const btn = document.getElementById('map-mode-btn');
-
+// ── Map mode ─────────────────────────────────────────────────────────────────
+function setMapMode(mode) {
+  mapMode = mode;
   map.removeLayer(tileBase);
   map.removeLayer(tileLabels);
 
-  if (mapMode === 'street') {
+  document.getElementById('btn-street').classList.toggle('active', mode === 'street');
+  document.getElementById('btn-transit').classList.toggle('active', mode === 'transport');
+
+  if (mode === 'street') {
     tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
       attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
     }).addTo(map);
     tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
       subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
     }).addTo(map);
-    btn.textContent = '🗺 Street';
-    // Thicker lines on dark map
-    Object.entries(routeLayers).forEach(([id, layer]) => layer.setStyle({ weight: 3, opacity: 0.8 }));
+    Object.values(routeLayers).forEach(l => { if (l.line) l.line.setStyle({ weight: 4, opacity: 1 }); });
   } else {
     tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
       attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
@@ -394,28 +429,38 @@ function toggleMapMode() {
     tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
       subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
     }).addTo(map);
-    btn.textContent = '🚋 Transport';
-    // Thicker, more visible lines on light map
-    Object.entries(routeLayers).forEach(([id, layer]) => layer.setStyle({ weight: 5, opacity: 0.9 }));
+    Object.values(routeLayers).forEach(l => { if (l.line) l.line.setStyle({ weight: 6, opacity: 0.95 }); });
   }
-  // Bring labels back on top
   tileLabels.bringToFront();
 }
 
-// ── Draw route lines ──────────────────────────────────────────────────────────
+// ── Draw route lines + stop dots ─────────────────────────────────────────────
 function drawRouteLines() {
   Object.entries(ROUTE_SHAPES).forEach(([id, coords]) => {
     const def = ROUTE_DEFS[id];
     if (!def) return;
+
+    // Casing (white outline for contrast on both light and dark maps)
+    const casing = L.polyline(coords, {
+      color: '#fff', weight: 7, opacity: 0.25,
+      lineJoin: 'round', lineCap: 'round',
+    }).addTo(map);
+
     const line = L.polyline(coords, {
-      color: def.color,
-      weight: 3,
-      opacity: 0.8,
-      lineJoin: 'round',
-      lineCap: 'round',
+      color: def.color, weight: 4, opacity: 1,
+      lineJoin: 'round', lineCap: 'round',
     }).addTo(map);
     line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
-    routeLayers[id] = line;
+
+    // Stop dots at each waypoint
+    const dots = coords.map(([lat, lng]) => {
+      return L.circleMarker([lat, lng], {
+        radius: 4, color: '#fff', weight: 1.5,
+        fillColor: def.color, fillOpacity: 1,
+      }).addTo(map).bindTooltip('Route ' + id, { sticky: true });
+    });
+
+    routeLayers[id] = { line, casing, dots };
   });
 }
 
@@ -459,6 +504,12 @@ function buildSidebar() {
   });
 }
 
+function setAllRoutes(on) {
+  Object.keys(ROUTE_DEFS).forEach(id => {
+    if (on !== activeRoutes.has(id)) toggleRoute(id);
+  });
+}
+
 function toggleRoute(id) {
   if (activeRoutes.has(id)) activeRoutes.delete(id);
   else activeRoutes.add(id);
@@ -475,10 +526,16 @@ function toggleRoute(id) {
     }
   });
 
-  // Show/hide route line
+  // Show/hide route line + stop dots
   if (routeLayers[id]) {
-    if (on) routeLayers[id].addTo(map);
-    else map.removeLayer(routeLayers[id]);
+    const { line, casing, dots } = routeLayers[id];
+    if (on) {
+      casing.addTo(map); line.addTo(map);
+      dots.forEach(d => d.addTo(map));
+    } else {
+      map.removeLayer(casing); map.removeLayer(line);
+      dots.forEach(d => map.removeLayer(d));
+    }
   }
 
   updateTramCount();
@@ -638,7 +695,7 @@ window.addEventListener('DOMContentLoaded', () => {
   buildSidebar();
   fetchTrams();
   setInterval(updateClock, 1000);
-  setInterval(fetchTrams, 60000);
+  setInterval(fetchTrams, 30000);
   updateClock();
 });
 </script>
