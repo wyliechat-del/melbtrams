@@ -129,36 +129,6 @@
   /* ── Map ── */
   #map { flex: 1; }
 
-  /* ── Schematic panel ── */
-  #schematic-panel {
-    display: none; flex: 1; position: relative; overflow: hidden;
-    background: #f5f0e8; cursor: grab;
-  }
-  #schematic-panel.active { display: block; }
-  #schematic-panel:active { cursor: grabbing; }
-  #schematic-img-wrap {
-    position: absolute; transform-origin: 0 0;
-    user-select: none; -webkit-user-select: none;
-  }
-  #schematic-img-wrap img {
-    display: block; width: 2301px; height: 2500px;
-    pointer-events: none; user-select: none;
-  }
-  #schematic-markers {
-    position: absolute; top: 0; left: 0;
-    width: 2301px; height: 2500px; pointer-events: none;
-  }
-  .schematic-tram {
-    position: absolute; transform: translate(-50%, -50%);
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 5px; font-weight: 700; font-family: 'DM Mono', monospace;
-    font-size: 11px; color: #fff; border: 2px solid rgba(255,255,255,0.4);
-    box-shadow: 0 2px 6px rgba(0,0,0,0.5); pointer-events: all;
-    cursor: pointer; width: 26px; height: 18px;
-    transition: transform 0.2s;
-  }
-  .schematic-tram:hover { transform: translate(-50%,-50%) scale(1.3); z-index: 999; }
-  .schematic-tram.selected { border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,0.4); transform: translate(-50%,-50%) scale(1.4); }
 
   /* ── Bottom bar (mobile) ── */
   #bottombar {
@@ -171,15 +141,6 @@
   #mobile-controls {
     display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
   }
-  #mobile-map-btns, #mobile-all-btns { display: flex; gap: 4px; }
-  .mobile-map-btn, .mobile-all-btn {
-    background: var(--surface2); border: 1px solid var(--border);
-    color: var(--muted); padding: 4px 10px; border-radius: 6px;
-    font-family: var(--font-mono); font-size: 11px; cursor: pointer;
-    white-space: nowrap;
-  }
-  .mobile-map-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
-  .mobile-all-btn { color: var(--text); }
   #mobile-tram-count { margin-left: auto; }
 
   /* ── Info panel (floating) ── */
@@ -289,14 +250,6 @@
     color: #DCDCDC; font-family: var(--font-mono);
   }
 
-  .map-type-btn {
-    flex: 1; padding: 7px 0; border-radius: 6px; font-size: 12px; font-weight: 500;
-    font-family: var(--font-ui); cursor: pointer; transition: all 0.15s;
-    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
-  }
-  .map-type-btn.active {
-    background: var(--accent); border-color: var(--accent); color: #0b0f1a;
-  }
 
   .all-btn {
     flex: 1; padding: 5px 0; border-radius: 6px; font-size: 11px;
@@ -332,13 +285,7 @@
 
   <div id="main">
     <div id="sidebar">
-      <div class="sidebar-section">
-        <div class="sidebar-section-label">Map Type</div>
-        <div style="display:flex;gap:6px;padding:0 14px 10px;">
-          <button id="btn-street" class="map-type-btn active" onclick="setMapMode('street')">Street</button>
-          <button id="btn-transit" class="map-type-btn" onclick="setMapMode('transport')">Transit</button>
-        </div>
-      </div>
+
       <div class="sidebar-section">
         <div class="sidebar-section-label">Routes</div>
         <div style="display:flex;gap:6px;padding:0 14px 8px;">
@@ -354,20 +301,11 @@
       </div>
     </div>
     <div id="map"></div>
-    <div id="schematic-panel">
-      <div id="schematic-img-wrap">
-        <img src="Tram-Map-2021.png" alt="Melbourne Tram Network" draggable="false">
-        <div id="schematic-markers"></div>
-      </div>
-    </div>
   </div>
 
   <div id="bottombar">
     <div id="mobile-controls">
-      <div id="mobile-map-btns">
-        <button class="mobile-map-btn active" id="mb-street" onclick="setMapMode('street')">Street</button>
-        <button class="mobile-map-btn" id="mb-transit" onclick="setMapMode('transport')">Transit</button>
-      </div>
+
       <div id="mobile-all-btns">
         <button class="mobile-all-btn" onclick="setAllRoutes(true)">All On</button>
         <button class="mobile-all-btn" onclick="setAllRoutes(false)">All Off</button>
@@ -389,7 +327,7 @@
 // ── Your Cloudflare Worker URL (fill this in after deploying worker.js) ──
 const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
-// ── Route definitions (colour-coded from the schematic map) ─────────────────
+// ── Route definitions ───────────────────────────────────────────────────────
 const ROUTE_DEFS = {
   '1':   { name: 'East Coburg – South Melbourne Beach', color: '#E53E3E', group: 'Swanston' },
   '3':   { name: 'Melbourne Uni – East Malvern (Wkdays)', color: '#E53E3E', group: 'Swanston' },
@@ -437,10 +375,9 @@ function saveRoutes() {
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
+let tileBase, tileLabels;
 let map, markers = {}, routeLayers = {}, activeRoutes = loadSavedRoutes();
 let selectedVehicle = null, refreshInterval = null;
-let mapMode = 'street'; // 'street' or 'transport'
-let tileBase, tileLabels;
 
 // Route geodata loaded from tram_network.json
 let TRAM_NETWORK = null;
@@ -473,225 +410,7 @@ function initMap() {
   loadAndDrawRoutes();
 }
 
-// ── Map mode ─────────────────────────────────────────────────────────────────
 
-// ── Thin-Plate Spline: GPS → schematic pixel ─────────────────────────────────
-const TPS_PTS = [[-37.7138,144.8906],[-37.7688,144.878],[-37.8014,144.9009],[-37.7276,144.9636],[-37.7448,144.9777],[-37.7292,144.9916],[-37.6797,145.0695],[-37.7947,145.0846],[-37.8178,145.1221],[-37.824,145.0576],[-37.8376,145.1104],[-37.8564,145.1821],[-37.9142,145.0169],[-37.8939,145.0558],[-37.8688,144.98],[-37.8471,144.9487],[-37.8408,144.9328],[-37.8214,144.9421],[-37.8144,144.9384],[-37.8183,144.9671],[-37.7993,144.9642]];
-const TPS_WX = [11498.818147163990,224.399106055865,36655.998711628665,-33995.751757877900,-116798.203297909540,109463.644375982880,6497.892932258214,-53782.885641859284,19111.352053833863,85075.789756260940,-2679.038836300908,-18679.994312377625,74187.114451784520,-44634.436728612345,-131734.446827693170,236319.062527223800,82182.271166640930,-829934.692134956700,354121.055551088600,114160.248111358920,102741.802646306550,-665033.878475126300,-3624.271332304317,3652.099018557254];
-const TPS_WY = [5739.833480413610,1005.009903315788,1098.298335776956,28001.787362825480,-20671.455434395770,4789.020281953652,12380.117659361616,24053.225982149550,-80039.809171071630,-44270.603790285335,71687.559537257040,7911.522857607301,-45545.211083696030,26506.205513890087,13232.158481175557,-87817.976719566780,95193.257006687800,564991.691326913400,-575320.486839036000,50437.731256369700,-53361.875947646105,-24255.089719776926,-5208.150401502421,-1182.763724925900];
-const TPS_N = TPS_PTS.length;
-
-function tpsKernel(r2) {
-  if (r2 < 1e-10) return 0;
-  return r2 * Math.log(r2) / 2;
-}
-
-function gpsToSchematic(lat, lng) {
-  let px = TPS_WX[TPS_N] + TPS_WX[TPS_N+1]*lat + TPS_WX[TPS_N+2]*lng;
-  let py = TPS_WY[TPS_N] + TPS_WY[TPS_N+1]*lat + TPS_WY[TPS_N+2]*lng;
-  for (let i = 0; i < TPS_N; i++) {
-    const r2 = (lat - TPS_PTS[i][0])**2 + (lng - TPS_PTS[i][1])**2;
-    const k = tpsKernel(r2);
-    px += TPS_WX[i] * k;
-    py += TPS_WY[i] * k;
-  }
-  return [px, py];
-}
-
-// ── Schematic pan/zoom state ──────────────────────────────────────────────────
-let sScale = 0.18, sTx = 0, sTy = 0;
-let sDragging = false, sDragStart = null, sTStart = null;
-
-function initSchematic() {
-  const panel = document.getElementById('schematic-panel');
-  const wrap = document.getElementById('schematic-img-wrap');
-
-  // Initial fit: show most of the map
-  const fitScale = Math.min(panel.clientWidth / 2301, panel.clientHeight / 2500) * 0.95;
-  sScale = fitScale;
-  sTx = (panel.clientWidth - 2301 * sScale) / 2;
-  sTy = (panel.clientHeight - 2500 * sScale) / 2;
-  applySchematicTransform();
-
-  panel.addEventListener('mousedown', e => {
-    sDragging = true;
-    sDragStart = { x: e.clientX, y: e.clientY };
-    sTStart = { x: sTx, y: sTy };
-  });
-  window.addEventListener('mousemove', e => {
-    if (!sDragging) return;
-    sTx = sTStart.x + (e.clientX - sDragStart.x);
-    sTy = sTStart.y + (e.clientY - sDragStart.y);
-    applySchematicTransform();
-  });
-  window.addEventListener('mouseup', () => { sDragging = false; });
-
-  // Touch
-  let lastTouchDist = null, lastTouchMid = null;
-  panel.addEventListener('touchstart', e => {
-    if (e.touches.length === 1) {
-      sDragging = true;
-      sDragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      sTStart = { x: sTx, y: sTy };
-    } else if (e.touches.length === 2) {
-      sDragging = false;
-      lastTouchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      lastTouchMid = { x: (e.touches[0].clientX + e.touches[1].clientX)/2, y: (e.touches[0].clientY + e.touches[1].clientY)/2 };
-    }
-  }, { passive: true });
-  panel.addEventListener('touchmove', e => {
-    if (e.touches.length === 1 && sDragging) {
-      sTx = sTStart.x + (e.touches[0].clientX - sDragStart.x);
-      sTy = sTStart.y + (e.touches[0].clientY - sDragStart.y);
-      applySchematicTransform();
-    } else if (e.touches.length === 2 && lastTouchDist) {
-      const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      const mid = { x: (e.touches[0].clientX + e.touches[1].clientX)/2, y: (e.touches[0].clientY + e.touches[1].clientY)/2 };
-      const ratio = dist / lastTouchDist;
-      const newScale = Math.max(0.1, Math.min(3, sScale * ratio));
-      sTx = mid.x - (mid.x - sTx) * (newScale / sScale);
-      sTy = mid.y - (mid.y - sTy) * (newScale / sScale);
-      sScale = newScale;
-      lastTouchDist = dist;
-      lastTouchMid = mid;
-      applySchematicTransform();
-    }
-  }, { passive: true });
-  panel.addEventListener('touchend', () => { sDragging = false; lastTouchDist = null; });
-
-  // Wheel zoom
-  panel.addEventListener('wheel', e => {
-    e.preventDefault();
-    const rect = panel.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const delta = e.deltaY > 0 ? 0.85 : 1.18;
-    const newScale = Math.max(0.1, Math.min(4, sScale * delta));
-    sTx = mx - (mx - sTx) * (newScale / sScale);
-    sTy = my - (my - sTy) * (newScale / sScale);
-    sScale = newScale;
-    applySchematicTransform();
-  }, { passive: false });
-}
-
-function applySchematicTransform() {
-  const wrap = document.getElementById('schematic-img-wrap');
-  wrap.style.transform = `translate(${sTx}px,${sTy}px) scale(${sScale})`;
-  // Reposition markers
-  updateSchematicMarkers();
-}
-
-let schematicMarkerEls = {}; // vehicleId → element
-let schematicInitDone = false;
-
-function updateSchematicMarkers() {
-  if (mapMode !== 'transport') return;
-  const container = document.getElementById('schematic-markers');
-  // Update positions of existing markers
-  Object.entries(schematicMarkerEls).forEach(([id, el]) => {
-    const lat = parseFloat(el.dataset.lat);
-    const lng = parseFloat(el.dataset.lng);
-    const [px, py] = gpsToSchematic(lat, lng);
-    el.style.left = px + 'px';
-    el.style.top  = py + 'px';
-  });
-}
-
-function renderSchematicVehicles(vehicles) {
-  const container = document.getElementById('schematic-markers');
-  if (!container) return;
-  const seen = new Set();
-
-  vehicles.forEach(v => {
-    const lat = v.lat, lng = v.lng;
-    if (!lat || !lng || lat === 0 || lng === 0) return;
-    if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
-
-    // Parse route ID same way as processVehicles
-    let routeId = '?';
-    if (v.routeId) {
-      const m = v.routeId.match(/vic-03-(\w+):?$/);
-      routeId = m ? m[1] : String(v.routeId);
-    }
-
-    if (!activeRoutes.has(routeId)) return;
-    const def = ROUTE_DEFS[routeId];
-    if (!def) return;
-
-    const id = v.id || (lat + ',' + lng);
-    seen.add(id);
-
-    const [px, py] = gpsToSchematic(lat, lng);
-    let el = schematicMarkerEls[id];
-    if (!el) {
-      el = document.createElement('div');
-      el.className = 'schematic-tram';
-      el.textContent = routeId;
-      el.style.background = def.color;
-      el.dataset.routeId = routeId;
-      el.dataset.vehicleId = id;
-      el.addEventListener('click', () => {
-        const speed = v.speed ? (v.speed * 3.6).toFixed(0) : '0';
-        showVehicleInfo({ routeId, vehicleLabel: v.vehicleLabel || id, speed, bearing: v.bearing || 0, tripId: v.tripId || '—', lat, lng });
-      });
-      container.appendChild(el);
-      schematicMarkerEls[id] = el;
-    }
-    el.dataset.lat = lat;
-    el.dataset.lng = lng;
-    el.style.left = px + 'px';
-    el.style.top  = py + 'px';
-  });
-
-  // Remove stale markers
-  Object.keys(schematicMarkerEls).forEach(id => {
-    if (!seen.has(id)) {
-      schematicMarkerEls[id].remove();
-      delete schematicMarkerEls[id];
-    }
-  });
-}
-
-
-function setMapMode(mode) {
-  mapMode = mode;
-  const isSchematic = mode === 'transport';
-
-  document.getElementById('btn-street').classList.toggle('active', !isSchematic);
-  document.getElementById('btn-transit').classList.toggle('active', isSchematic);
-  document.getElementById('mb-street')?.classList.toggle('active', !isSchematic);
-  document.getElementById('mb-transit')?.classList.toggle('active', isSchematic);
-
-  const mapEl = document.getElementById('map');
-  const schEl = document.getElementById('schematic-panel');
-
-  if (isSchematic) {
-    // Switch to schematic view
-    mapEl.style.display = 'none';
-    schEl.style.display = 'block';
-    if (!schematicInitDone) {
-      schematicInitDone = true;
-      initSchematic();
-    }
-    // Re-render vehicles on schematic with latest data
-    if (window._lastVehicles) renderSchematicVehicles(window._lastVehicles);
-  } else {
-    // Switch back to street map
-    schEl.style.display = 'none';
-    mapEl.style.display = '';
-    map.removeLayer(tileBase);
-    map.removeLayer(tileLabels);
-    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
-    }).addTo(map);
-    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
-    }).addTo(map);
-    Object.values(routeLayers).forEach(l => { if (l.line) l.line.setStyle({ weight: 4, opacity: 1 }); });
-    tileLabels.bringToFront();
-    map.invalidateSize();
-  }
-}
 
 // ── Load network data then draw ──────────────────────────────────────────────
 async function loadAndDrawRoutes() {
@@ -840,10 +559,7 @@ function toggleRoute(id) {
 
   updateTramCount();
   updateStopVisibility();
-  // Sync schematic marker visibility
-  Object.entries(schematicMarkerEls).forEach(([vid, el]) => {
-    el.style.display = activeRoutes.has(el.dataset.routeId) ? '' : 'none';
-  });
+
 }
 
 // ── Fetch trams from Worker ────────────────────────────────────────────────
@@ -860,9 +576,7 @@ async function fetchTrams() {
     if (json.error) throw new Error(json.error);
     const vehicles = json.vehicles || [];
 
-    window._lastVehicles = vehicles;
     processVehicles(vehicles);
-    if (mapMode === 'transport') renderSchematicVehicles(vehicles);
     setStatus('live', vehicles.length + ' vehicles');
     document.getElementById('error-banner').style.display = 'none';
 
