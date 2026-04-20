@@ -397,10 +397,11 @@ function saveRoutes() {
 
 // ── State ────────────────────────────────────────────────────────────────────
 let tileBase, tileLabels;
-let mapStyle = 'dark';
+let mapStyle = (() => { try { return localStorage.getItem('melbtrams_map_style') || 'dark'; } catch(e) { return 'dark'; } })();
 
 function setMapStyle(style) {
   mapStyle = style;
+  try { localStorage.setItem('melbtrams_map_style', style); } catch(e) {}
   document.getElementById('btn-dark').classList.toggle('active', style === 'dark');
   document.getElementById('btn-light').classList.toggle('active', style === 'light');
   // Update mobile buttons
@@ -434,6 +435,15 @@ let selectedVehicle = null, refreshInterval = null;
 let TRAM_NETWORK = null;
 
 // ── Map init ─────────────────────────────────────────────────────────────────
+function applyMarkerRotation(iconEl, degrees) {
+  // Leaflet sets transform as translate3d(...) for positioning
+  // We append our rotation while preserving Leaflet's translate
+  iconEl.style.transformOrigin = '13px 9px';
+  const t = iconEl.style.transform || '';
+  // Remove any previous rotation we added
+  const base = t.replace(/ *rotate\([^)]+\)/g, '');
+  iconEl.style.transform = degrees ? base + ' rotate(' + degrees + 'deg)' : base;
+}
 function initMap() {
   map = L.map('map', {
     center: [-37.814, 144.963],
@@ -450,6 +460,9 @@ function initMap() {
   tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
     subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
   }).addTo(map);
+
+  // Apply saved map style (if not default dark)
+  if (mapStyle !== 'dark') setMapStyle(mapStyle);
 
   // Free tram zone rectangle
   const ftz = L.rectangle(
@@ -678,23 +691,24 @@ function processVehicles(vehicles) {
       markers[id].marker.setLatLng([lat, lng]);
       markers[id].data = { routeId, vehicleId, speed, bearing, tripId, lat, lng };
       // Update direction on existing marker
-      const el = document.getElementById('vm-' + id);
-      if (el) {
-        const moving = parseFloat(speed) > 2;
-        el.classList.toggle('moving', moving);
-        el.style.transform = 'rotate(' + (moving ? bearing : 0) + 'deg)';
+      const moving = parseFloat(speed) > 2;
+      const wrap = document.getElementById('vm-' + id);
+      if (wrap) {
+        wrap.classList.toggle('moving', moving);
+      }
+      if (markers[id].marker._icon) {
+        applyMarkerRotation(markers[id].marker._icon, moving ? bearing : 0);
       }
     } else {
       const isMoving = parseFloat(speed) > 2;
       const movingClass = isMoving ? ' moving' : '';
-      const rotation = isMoving ? bearing : 0;
       const arrow = '<svg class="tram-arrow" width="8" height="14" viewBox="0 0 8 14" xmlns="http://www.w3.org/2000/svg"><polygon points="0,0 8,7 0,14" fill="' + def.color + '" stroke="rgba(255,255,255,0.35)" stroke-width="1"/></svg>';
-      const html = '<div class="tram-wrap' + movingClass + '" id="vm-' + id + '" style="transform:rotate(' + rotation + 'deg)">' +
+      const html = '<div class="tram-wrap' + movingClass + '" id="vm-' + id + '">' +
         '<div class="tram-marker" style="background:' + def.color + '">' + routeId + '</div>' +
         arrow +
         '</div>';
       const icon = L.divIcon({
-        className: '',
+        className: 'tram-icon-outer',
         html,
         iconSize: [34, 18],
         iconAnchor: [13, 9],
@@ -702,6 +716,14 @@ function processVehicles(vehicles) {
       const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
       marker.on('click', () => showInfo(id));
       if (isVisible) marker.addTo(map);
+      // Apply rotation to the Leaflet icon element after adding to map
+      if (isVisible && marker._icon) {
+        applyMarkerRotation(marker._icon, isMoving ? bearing : 0);
+      } else {
+        marker.on('add', () => {
+          if (marker._icon) applyMarkerRotation(marker._icon, isMoving ? bearing : 0);
+        });
+      }
       markers[id] = { marker, routeId, data: { routeId, vehicleId, speed, bearing, tripId, lat, lng } };
     }
 
