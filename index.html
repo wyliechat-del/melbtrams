@@ -200,26 +200,21 @@
   .leaflet-control-attribution a { color: var(--muted) !important; }
 
   .tram-wrap {
-    position: relative; display: flex; align-items: center; cursor: pointer;
-    transition: transform 0.2s; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+    display: flex; align-items: center; cursor: pointer;
+    transform-origin: 13px 9px;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+    transition: filter 0.2s;
   }
-  .tram-wrap:hover { transform: scale(1.3); z-index: 9999 !important; }
-  .tram-wrap.selected { transform: scale(1.4); z-index: 9999 !important; filter: drop-shadow(0 0 4px rgba(255,255,255,0.6)); }
+  .tram-wrap:hover { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6)) brightness(1.2); }
+  .tram-wrap.selected { filter: drop-shadow(0 0 5px rgba(255,255,255,0.8)); }
   .tram-marker {
     display: flex; align-items: center; justify-content: center;
     border-radius: 4px; font-weight: 700; font-family: 'DM Mono', monospace;
     font-size: 10px; color: #fff; border: 2px solid rgba(255,255,255,0.35);
-    width: 26px; height: 18px; position: relative; z-index: 1; flex-shrink: 0;
+    width: 26px; height: 18px; flex-shrink: 0;
   }
-  .tram-arrow {
-    width: 0; height: 0; flex-shrink: 0;
-    border-top: 7px solid transparent;
-    border-bottom: 7px solid transparent;
-    border-left: 8px solid currentColor;
-    margin-left: -1px;
-    display: none;
-  }
-  .tram-wrap.moving .tram-arrow { display: block; }
+  .tram-arrow { display: none; align-items: center; margin-left: -1px; }
+  .tram-wrap.moving .tram-arrow { display: flex; }
 
   /* ── Mobile responsive ── */
   @media (max-width: 640px) {
@@ -253,6 +248,12 @@
   }
 
   .sidebar-section { border-bottom: 1px solid var(--border); }
+  .map-type-btn {
+    flex: 1; padding: 6px 0; border-radius: 6px; font-size: 12px;
+    font-family: var(--font-mono); cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--muted); transition: all 0.15s;
+  }
+  .map-type-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
   .sidebar-section-label {
     padding: 10px 14px 6px;
     font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
@@ -296,6 +297,13 @@
     <div id="sidebar">
 
       <div class="sidebar-section">
+        <div class="sidebar-section-label">Map Style</div>
+        <div style="display:flex;gap:6px;padding:0 14px 10px;">
+          <button id="btn-dark" class="map-type-btn active" onclick="setMapStyle('dark')">Dark</button>
+          <button id="btn-light" class="map-type-btn" onclick="setMapStyle('light')">Light</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
         <div class="sidebar-section-label">Routes</div>
         <div style="display:flex;gap:6px;padding:0 14px 8px;">
           <button class="all-btn" onclick="setAllRoutes(true)">All On</button>
@@ -315,6 +323,10 @@
   <div id="bottombar">
     <div id="mobile-controls">
 
+      <div id="mobile-map-btns" style="display:flex;gap:4px;">
+        <button class="mobile-map-btn active" id="mb-dark" onclick="setMapStyle('dark')">Dark</button>
+        <button class="mobile-map-btn" id="mb-light" onclick="setMapStyle('light')">Light</button>
+      </div>
       <div id="mobile-all-btns">
         <button class="mobile-all-btn" onclick="setAllRoutes(true)">All On</button>
         <button class="mobile-all-btn" onclick="setAllRoutes(false)">All Off</button>
@@ -385,6 +397,36 @@ function saveRoutes() {
 
 // ── State ────────────────────────────────────────────────────────────────────
 let tileBase, tileLabels;
+let mapStyle = 'dark';
+
+function setMapStyle(style) {
+  mapStyle = style;
+  document.getElementById('btn-dark').classList.toggle('active', style === 'dark');
+  document.getElementById('btn-light').classList.toggle('active', style === 'light');
+  // Update mobile buttons
+  document.getElementById('mb-dark')?.classList.toggle('active', style === 'dark');
+  document.getElementById('mb-light')?.classList.toggle('active', style === 'light');
+
+  map.removeLayer(tileBase);
+  map.removeLayer(tileLabels);
+
+  if (style === 'dark') {
+    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+    }).addTo(map);
+  } else {
+    tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    tileLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19, pane: 'shadowPane',
+    }).addTo(map);
+  }
+  tileLabels.bringToFront();
+}
 let map, markers = {}, routeLayers = {}, activeRoutes = loadSavedRoutes();
 let selectedVehicle = null, refreshInterval = null;
 
@@ -640,16 +682,16 @@ function processVehicles(vehicles) {
       if (el) {
         const moving = parseFloat(speed) > 2;
         el.classList.toggle('moving', moving);
-        el.style.transform = moving ? 'rotate(' + bearing + 'deg)' : '';
+        el.style.transform = 'rotate(' + (moving ? bearing : 0) + 'deg)';
       }
     } else {
       const isMoving = parseFloat(speed) > 2;
-      const arrowColor = def.color;
-      const wrapStyle = isMoving ? 'transform:rotate(' + bearing + 'deg)' : '';
       const movingClass = isMoving ? ' moving' : '';
-      const html = '<div class="tram-wrap' + movingClass + '" id="vm-' + id + '" style="' + wrapStyle + '">' +
+      const rotation = isMoving ? bearing : 0;
+      const arrow = '<svg class="tram-arrow" width="8" height="14" viewBox="0 0 8 14" xmlns="http://www.w3.org/2000/svg"><polygon points="0,0 8,7 0,14" fill="' + def.color + '" stroke="rgba(255,255,255,0.35)" stroke-width="1"/></svg>';
+      const html = '<div class="tram-wrap' + movingClass + '" id="vm-' + id + '" style="transform:rotate(' + rotation + 'deg)">' +
         '<div class="tram-marker" style="background:' + def.color + '">' + routeId + '</div>' +
-        '<div class="tram-arrow" style="color:' + arrowColor + ';border-left-color:' + arrowColor + '"></div>' +
+        arrow +
         '</div>';
       const icon = L.divIcon({
         className: '',
