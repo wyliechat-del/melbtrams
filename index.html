@@ -461,13 +461,19 @@ function drawRouteLines() {
     const casing = L.polyline(segments, {
       color: '#fff', weight: 8, opacity: 0.3,
       lineJoin: 'round', lineCap: 'round',
-    }).addTo(map);
+    });
 
     const line = L.polyline(segments, {
       color: def.color, weight: 4, opacity: 1,
       lineJoin: 'round', lineCap: 'round',
-    }).addTo(map);
+    });
     line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
+
+    // Only add to map if this route is currently active
+    if (activeRoutes.has(id)) {
+      casing.addTo(map);
+      line.addTo(map);
+    }
 
     routeLayers[id] = { line, casing, dots: [] };
   });
