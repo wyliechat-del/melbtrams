@@ -441,6 +441,8 @@ function setMapStyle(style) {
 }
 let map, markers = {}, routeLayers = {}, activeRoutes = loadSavedRoutes();
 let selectedVehicle = null, refreshInterval = null;
+let lastFetchTime = null;      // when we last got data from API
+let deadReckonTimer = null;    // animation frame loop
 
 // Route geodata loaded from tram_network.json
 let TRAM_NETWORK = null;
@@ -476,6 +478,58 @@ function makeTramSVG(routeId, color, bearing, vehicleId) {
 }
 
 // Calculate bearing between two GPS points (degrees, 0=N, 90=E)
+// Haversine distance in metres between two GPS points
+function calcDistMetres(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Project a lat/lng forward by `metres` in direction `bearing` (degrees)
+function projectPoint(lat, lng, bearing, metres) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const toDeg = r => r * 180 / Math.PI;
+  const brng = toRad(bearing);
+  const lat1 = toRad(lat);
+  const lng1 = toRad(lng);
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(metres/R) +
+    Math.cos(lat1) * Math.sin(metres/R) * Math.cos(brng)
+  );
+  const lng2 = lng1 + Math.atan2(
+    Math.sin(brng) * Math.sin(metres/R) * Math.cos(lat1),
+    Math.cos(metres/R) - Math.sin(lat1) * Math.sin(lat2)
+  );
+  return [toDeg(lat2), toDeg(lng2)];
+}
+
+// Dead reckoning: animate trams forward from last known position
+function startDeadReckoning() {
+  if (deadReckonTimer) cancelAnimationFrame(deadReckonTimer);
+  function tick() {
+    if (!lastFetchTime) return;
+    const elapsed = (Date.now() - lastFetchTime) / 1000; // seconds since last fetch
+    // Only project up to 60s ahead — beyond that data is too stale
+    const projElapsed = Math.min(elapsed, 60);
+
+    Object.values(markers).forEach(m => {
+      const speed = m.calcSpeed || 0;
+      const bearing = m.lastBearing || 0;
+      if (speed < 0.5) return; // don't move stationary trams
+      const dist = speed * projElapsed;
+      const [pLat, pLng] = projectPoint(m.data.lat, m.data.lng, bearing, dist);
+      m.marker.setLatLng([pLat, pLng]);
+    });
+    deadReckonTimer = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
 function calcBearing(lat1, lng1, lat2, lng2) {
   const toRad = d => d * Math.PI / 180;
   const dLng = toRad(lng2 - lng1);
@@ -739,7 +793,9 @@ async function fetchTrams() {
     if (json.error) throw new Error(json.error);
     const vehicles = json.vehicles || [];
 
+    lastFetchTime = Date.now();
     processVehicles(vehicles);
+    startDeadReckoning();
     setStatus('live', vehicles.length + ' vehicles');
     document.getElementById('error-banner').style.display = 'none';
 
@@ -790,17 +846,26 @@ function processVehicles(vehicles) {
       const prevLat = markers[id].data.lat;
       const prevLng = markers[id].data.lng;
       const prevBearing = markers[id].lastBearing || 0;
-      // Calculate bearing from position delta if tram has moved meaningfully
       const distMoved = Math.abs(lat - prevLat) + Math.abs(lng - prevLng);
       const iconEl = markers[id].marker._icon;
       let effectiveBearing = prevBearing;
-      if (distMoved > 0.00005) { // ~5m threshold to avoid GPS jitter
+      let calcSpeed = markers[id].calcSpeed || 0;
+
+      if (distMoved > 0.00005) {
         effectiveBearing = calcBearing(prevLat, prevLng, lat, lng);
         markers[id].lastBearing = effectiveBearing;
-        // Make arrow visible now we have a real bearing
+        // Estimate speed from how far tram moved vs time since last fetch
+        if (lastFetchTime) {
+          const elapsed = (Date.now() - lastFetchTime) / 1000;
+          const distMetres = calcDistMetres(prevLat, prevLng, lat, lng);
+          calcSpeed = elapsed > 0 ? Math.min(distMetres / elapsed, 20) : 0;
+        }
         if (iconEl) { const gEl = iconEl.querySelector('g'); if (gEl) gEl.style.display = ''; }
       }
+
+      // Snap back to true position on each API update (dead reckoning resets here)
       markers[id].marker.setLatLng([lat, lng]);
+      markers[id].calcSpeed = calcSpeed;
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
       // Update arrow rotation
       if (iconEl) {
