@@ -719,7 +719,7 @@ function processVehicles(vehicles) {
       }
     } else {
       const initBearing = bearing || 0;
-      if (Object.keys(markers).length < 3) console.log('TRAM DEBUG', routeId, 'speed:', speed, 'bearing:', bearing, 'v.bearing:', v.bearing);
+      if (bearing > 0) console.log('BEARING OK', routeId, 'bearing:', bearing, 'speed:', speed);
       const icon = L.divIcon({
         className: 'tram-icon-outer',
         html: makeTramSVG(routeId, def.color, initBearing, id),
