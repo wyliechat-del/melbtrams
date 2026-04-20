@@ -215,7 +215,7 @@
   .route-group-header {
     padding: 8px 14px 4px;
     font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase;
-    color: var(--muted); font-family: var(--font-mono);
+    color: #DCDCDC; font-family: var(--font-mono);
     border-top: 1px solid var(--border); margin-top: 4px;
   }
   .route-group-header:first-child { border-top: none; margin-top: 0; }
@@ -239,7 +239,7 @@
   .sidebar-section-label {
     padding: 10px 14px 6px;
     font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
-    color: var(--muted); font-family: var(--font-mono);
+    color: #DCDCDC; font-family: var(--font-mono);
   }
 
   .map-type-btn {
@@ -357,8 +357,24 @@ const ROUTE_DEFS = {
 
 const GROUPS = ['Swanston', 'Elizabeth', 'Collins', 'Bourke', 'La Trobe', 'Flinders', 'Suburban'];
 
+// ── Persistent route preferences ─────────────────────────────────────────────
+const STORAGE_KEY = 'melbtrams_active_routes';
+function loadSavedRoutes() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const arr = JSON.parse(saved);
+      return new Set(arr.filter(id => ROUTE_DEFS[id]));
+    }
+  } catch(e) {}
+  return new Set(Object.keys(ROUTE_DEFS));
+}
+function saveRoutes() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...activeRoutes])); } catch(e) {}
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
-let map, markers = {}, routeLayers = {}, activeRoutes = new Set(Object.keys(ROUTE_DEFS));
+let map, markers = {}, routeLayers = {}, activeRoutes = loadSavedRoutes();
 let selectedVehicle = null, refreshInterval = null;
 let mapMode = 'street'; // 'street' or 'transport'
 let tileBase, tileLabels;
@@ -530,11 +546,13 @@ function setAllRoutes(on) {
   Object.keys(ROUTE_DEFS).forEach(id => {
     if (on !== activeRoutes.has(id)) toggleRoute(id);
   });
+  saveRoutes();
 }
 
 function toggleRoute(id) {
   if (activeRoutes.has(id)) activeRoutes.delete(id);
   else activeRoutes.add(id);
+  saveRoutes();
 
   const on = activeRoutes.has(id);
   document.getElementById('route-item-' + id)?.classList.toggle('dimmed', !on);
