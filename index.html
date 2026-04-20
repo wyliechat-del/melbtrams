@@ -131,9 +131,22 @@
   #bottombar {
     display: none;
     background: var(--surface); border-top: 1px solid var(--border);
-    padding: 8px 12px; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 6px 10px 8px; gap: 6px; flex-direction: column;
     z-index: 1000; flex-shrink: 0;
   }
+  #mobile-controls {
+    display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+  }
+  #mobile-map-btns, #mobile-all-btns { display: flex; gap: 4px; }
+  .mobile-map-btn, .mobile-all-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--muted); padding: 4px 10px; border-radius: 6px;
+    font-family: var(--font-mono); font-size: 11px; cursor: pointer;
+    white-space: nowrap;
+  }
+  .mobile-map-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  .mobile-all-btn { color: var(--text); }
+  #mobile-tram-count { margin-left: auto; }
 
   /* ── Info panel (floating) ── */
   #info-panel {
@@ -228,7 +241,7 @@
     color: #fff; cursor: pointer; opacity: 1; transition: opacity 0.2s;
     border: 2px solid rgba(255,255,255,0.2);
   }
-  .mobile-pill.dimmed { opacity: 0.25; }
+  .mobile-pill.dimmed { background: #4a5568 !important; opacity: 0.7; }
 
   #mobile-tram-count {
     font-family: var(--font-mono); font-size: 11px; color: var(--accent);
@@ -310,8 +323,18 @@
   </div>
 
   <div id="bottombar">
+    <div id="mobile-controls">
+      <div id="mobile-map-btns">
+        <button class="mobile-map-btn active" id="mb-street" onclick="setMapMode('street')">Street</button>
+        <button class="mobile-map-btn" id="mb-transit" onclick="setMapMode('transit')">Transit</button>
+      </div>
+      <div id="mobile-all-btns">
+        <button class="mobile-all-btn" onclick="setAllRoutes(true)">All On</button>
+        <button class="mobile-all-btn" onclick="setAllRoutes(false)">All Off</button>
+      </div>
+      <div id="mobile-tram-count">— trams</div>
+    </div>
     <div id="mobile-pills"></div>
-    <div id="mobile-tram-count">— trams</div>
   </div>
 </div>
 
@@ -418,6 +441,9 @@ function setMapMode(mode) {
 
   document.getElementById('btn-street').classList.toggle('active', mode === 'street');
   document.getElementById('btn-transit').classList.toggle('active', mode === 'transport');
+  // Sync mobile buttons
+  document.getElementById('mb-street')?.classList.toggle('active', mode === 'street');
+  document.getElementById('mb-transit')?.classList.toggle('active', mode === 'transport');
 
   if (mode === 'street') {
     tileBase = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
