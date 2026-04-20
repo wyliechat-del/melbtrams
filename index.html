@@ -199,18 +199,27 @@
   }
   .leaflet-control-attribution a { color: var(--muted) !important; }
 
+  .tram-wrap {
+    position: relative; display: flex; align-items: center; cursor: pointer;
+    transition: transform 0.2s; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+  }
+  .tram-wrap:hover { transform: scale(1.3); z-index: 9999 !important; }
+  .tram-wrap.selected { transform: scale(1.4); z-index: 9999 !important; filter: drop-shadow(0 0 4px rgba(255,255,255,0.6)); }
   .tram-marker {
     display: flex; align-items: center; justify-content: center;
-    border-radius: 5px; font-weight: 700; font-family: 'DM Mono', monospace;
-    font-size: 10px; color: #fff; border: 2px solid rgba(255,255,255,0.3);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.6); cursor: pointer;
-    transition: transform 0.2s;
+    border-radius: 4px; font-weight: 700; font-family: 'DM Mono', monospace;
+    font-size: 10px; color: #fff; border: 2px solid rgba(255,255,255,0.35);
+    width: 26px; height: 18px; position: relative; z-index: 1; flex-shrink: 0;
   }
-  .tram-marker:hover { transform: scale(1.3); z-index: 9999 !important; }
-  .tram-marker.selected {
-    border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,0.4);
-    transform: scale(1.4); z-index: 9999 !important;
+  .tram-arrow {
+    width: 0; height: 0; flex-shrink: 0;
+    border-top: 7px solid transparent;
+    border-bottom: 7px solid transparent;
+    border-left: 8px solid currentColor;
+    margin-left: -1px;
+    display: none;
   }
+  .tram-wrap.moving .tram-arrow { display: block; }
 
   /* ── Mobile responsive ── */
   @media (max-width: 640px) {
@@ -626,11 +635,26 @@ function processVehicles(vehicles) {
     if (markers[id]) {
       markers[id].marker.setLatLng([lat, lng]);
       markers[id].data = { routeId, vehicleId, speed, bearing, tripId, lat, lng };
+      // Update direction on existing marker
+      const el = document.getElementById('vm-' + id);
+      if (el) {
+        const moving = parseFloat(speed) > 2;
+        el.classList.toggle('moving', moving);
+        el.style.transform = moving ? 'rotate(' + bearing + 'deg)' : '';
+      }
     } else {
+      const isMoving = parseFloat(speed) > 2;
+      const arrowColor = def.color;
+      const wrapStyle = isMoving ? 'transform:rotate(' + bearing + 'deg)' : '';
+      const movingClass = isMoving ? ' moving' : '';
+      const html = '<div class="tram-wrap' + movingClass + '" id="vm-' + id + '" style="' + wrapStyle + '">' +
+        '<div class="tram-marker" style="background:' + def.color + '">' + routeId + '</div>' +
+        '<div class="tram-arrow" style="color:' + arrowColor + ';border-left-color:' + arrowColor + '"></div>' +
+        '</div>';
       const icon = L.divIcon({
         className: '',
-        html: '<div class="tram-marker" id="vm-' + id + '" style="background:' + def.color + ';width:26px;height:18px;">' + routeId + '</div>',
-        iconSize: [26, 18],
+        html,
+        iconSize: [34, 18],
         iconAnchor: [13, 9],
       });
       const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
@@ -669,7 +693,7 @@ function showInfo(vehicleId) {
   const def = ROUTE_DEFS[d.routeId] || { color: '#888', name: 'Unknown route' };
 
   selectedVehicle = vehicleId;
-  document.querySelectorAll('.tram-marker').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.tram-wrap').forEach(el => el.classList.remove('selected'));
   document.getElementById('vm-' + vehicleId)?.classList.add('selected');
 
   document.getElementById('info-content').innerHTML = `
@@ -689,7 +713,7 @@ function showInfo(vehicleId) {
 
 function closeInfo() {
   document.getElementById('info-panel').classList.remove('visible');
-  document.querySelectorAll('.tram-marker').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.tram-wrap').forEach(el => el.classList.remove('selected'));
   selectedVehicle = null;
 }
 
