@@ -455,6 +455,16 @@ function makeTramSVG(routeId, color, bearing, vehicleId) {
   );
 }
 
+// Calculate bearing between two GPS points (degrees, 0=N, 90=E)
+function calcBearing(lat1, lng1, lat2, lng2) {
+  const toRad = d => d * Math.PI / 180;
+  const dLng = toRad(lng2 - lng1);
+  const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+            Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
 function applyMarkerRotation(iconEl, degrees) {
   // Rotate the inner tram-wrap, not the Leaflet positioning element
   const wrap = iconEl.querySelector('.tram-wrap');
@@ -706,20 +716,26 @@ function processVehicles(vehicles) {
     const isVisible = activeRoutes.has(routeId) || !ROUTE_DEFS[routeId];
 
     if (markers[id]) {
-      markers[id].marker.setLatLng([lat, lng]);
+      const prevLat = markers[id].data.lat;
+      const prevLng = markers[id].data.lng;
       const prevBearing = markers[id].lastBearing || 0;
-      const effectiveBearing = (bearing && bearing > 1) ? bearing : prevBearing;
-      if (bearing && bearing > 1) markers[id].lastBearing = bearing;
+      // Calculate bearing from position delta if tram has moved meaningfully
+      const distMoved = Math.abs(lat - prevLat) + Math.abs(lng - prevLng);
+      let effectiveBearing = prevBearing;
+      if (distMoved > 0.00005) { // ~5m threshold to avoid GPS jitter
+        effectiveBearing = calcBearing(prevLat, prevLng, lat, lng);
+        markers[id].lastBearing = effectiveBearing;
+      }
+      markers[id].marker.setLatLng([lat, lng]);
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
-      // Update arrow rotation - rotate only the <g> inside SVG, circle stays upright
+      // Update arrow rotation
       const iconEl = markers[id].marker._icon;
       if (iconEl) {
         const gEl = iconEl.querySelector('g');
         if (gEl) gEl.setAttribute('transform', 'rotate(' + effectiveBearing + ')');
       }
     } else {
-      const initBearing = bearing || 0;
-      if (bearing > 0) console.log('BEARING OK', routeId, 'bearing:', bearing, 'speed:', speed);
+      const initBearing = markers[id] ? (markers[id].lastBearing || 0) : 0;
       const icon = L.divIcon({
         className: 'tram-icon-outer',
         html: makeTramSVG(routeId, def.color, initBearing, id),
