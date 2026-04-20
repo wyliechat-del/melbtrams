@@ -201,14 +201,12 @@
 
   .tram-icon-outer {
     background: none !important; border: none !important; overflow: visible !important;
-  }
-  .tram-wrap {
     cursor: pointer;
     filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7));
     transition: filter 0.15s;
   }
-  .tram-wrap:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
-  .tram-wrap.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
+  .tram-icon-outer:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
+  .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
   /* ── Mobile responsive ── */
   @media (max-width: 640px) {
@@ -430,25 +428,31 @@ let TRAM_NETWORK = null;
 
 // ── Map init ─────────────────────────────────────────────────────────────────
 function makeTramSVG(routeId, color, bearing, vehicleId) {
-  // Teardrop: circle body with a pointed tail indicating direction of travel
-  // The SVG is 28x28, centre at 14,14. We rotate the whole SVG.
-  // Shape: rounded rect (badge) with a triangular tail pointing "up" (north=0deg)
-  const r = routeId.length > 2 ? 9 : 10; // circle radius
-  const label = routeId.length > 2 ? 8 : 9; // font size
-  return '<div class="tram-wrap" id="vm-' + vehicleId + '">' +
-    '<svg width="28" height="28" viewBox="-14 -14 28 28" xmlns="http://www.w3.org/2000/svg"' +
-    ' style="transform:rotate(' + bearing + 'deg);overflow:visible;display:block;">' +
-    // Tail pointing up (direction of travel)
-    '<polygon points="0,-' + (r+7) + ' -4,-' + (r-2) + ' 4,-' + (r-2) + '"' +
-    ' fill="' + color + '" stroke="rgba(255,255,255,0.5)" stroke-width="1" stroke-linejoin="round"/>' +
-    // Circle body
-    '<circle cx="0" cy="0" r="' + r + '"' +
-    ' fill="' + color + '" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>' +
+  // Circle with protruding arrow triangle pointing in direction of travel
+  // SVG is 36x36, everything centred at 18,18
+  // Arrow points UP at 0deg (north), rotates clockwise
+  const r = 11; // circle radius
+  const fs = routeId.length > 2 ? 7 : 9; // font size
+  // Arrow triangle: tip at top, base overlapping circle edge
+  const tipY = -(r + 7);   // sharp tip extends beyond circle
+  const baseY = -(r - 3);  // base sits inside circle edge
+  const baseW = 5;          // half-width of base
+  const pts = '0,' + tipY + ' -' + baseW + ',' + baseY + ' ' + baseW + ',' + baseY;
+  return (
+    '<svg id="vm-' + vehicleId + '" width="36" height="36" viewBox="-18 -18 36 36"' +
+    ' xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible;">' +
+    '<g transform="rotate(' + bearing + ')">' +
+    // Arrow triangle (pointing up = direction of travel)
+    '<polygon points="' + pts + '" fill="white" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round"/>' +
+    '</g>' +
+    // Circle body (not rotated — label stays upright)
+    '<circle cx="0" cy="0" r="' + r + '" fill="' + color + '" stroke="white" stroke-width="1.5"/>' +
     // Route label
-    '<text x="0" y="0.35em" text-anchor="middle" dominant-baseline="middle"' +
-    ' font-family="DM Mono,monospace" font-weight="700" font-size="' + label + '" fill="#fff">' +
+    '<text x="0" y="0" text-anchor="middle" dominant-baseline="central"' +
+    ' font-family="DM Mono,monospace" font-weight="700" font-size="' + fs + '" fill="white">' +
     routeId + '</text>' +
-    '</svg></div>';
+    '</svg>'
+  );
 }
 
 function applyMarkerRotation(iconEl, degrees) {
@@ -708,19 +712,19 @@ function processVehicles(vehicles) {
       const effectiveBearing = moving ? bearing : prevBearing;
       if (moving) markers[id].lastBearing = bearing;
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
-      // Update SVG rotation directly in the DOM
+      // Update arrow rotation - rotate only the <g> inside SVG, circle stays upright
       const iconEl = markers[id].marker._icon;
       if (iconEl) {
-        const svgEl = iconEl.querySelector('svg');
-        if (svgEl) svgEl.style.transform = 'rotate(' + effectiveBearing + 'deg)';
+        const gEl = iconEl.querySelector('g');
+        if (gEl) gEl.setAttribute('transform', 'rotate(' + effectiveBearing + ')');
       }
     } else {
       const initBearing = parseFloat(speed) > 2 ? bearing : 0;
       const icon = L.divIcon({
         className: 'tram-icon-outer',
         html: makeTramSVG(routeId, def.color, initBearing, id),
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
       });
       const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
       marker.on('click', () => showInfo(id));
@@ -758,7 +762,7 @@ function showInfo(vehicleId) {
   const def = ROUTE_DEFS[d.routeId] || { color: '#888', name: 'Unknown route' };
 
   selectedVehicle = vehicleId;
-  document.querySelectorAll('.tram-wrap').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
   document.getElementById('vm-' + vehicleId)?.classList.add('selected');
 
   document.getElementById('info-content').innerHTML = `
@@ -778,7 +782,7 @@ function showInfo(vehicleId) {
 
 function closeInfo() {
   document.getElementById('info-panel').classList.remove('visible');
-  document.querySelectorAll('.tram-wrap').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
   selectedVehicle = null;
 }
 
