@@ -690,21 +690,22 @@ function processVehicles(vehicles) {
 
     if (markers[id]) {
       markers[id].marker.setLatLng([lat, lng]);
-      markers[id].data = { routeId, vehicleId, speed, bearing, tripId, lat, lng };
-      // Update direction on existing marker
+      // Persist last known bearing — only update if actually moving
+      const prevBearing = markers[id].lastBearing || 0;
       const moving = parseFloat(speed) > 2;
+      const effectiveBearing = moving ? bearing : prevBearing;
+      if (moving) markers[id].lastBearing = bearing;
+      markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
+      // Update wrap rotation directly via id
       const wrap = document.getElementById('vm-' + id);
       if (wrap) {
-        wrap.classList.toggle('moving', moving);
-      }
-      if (markers[id].marker._icon) {
-        applyMarkerRotation(markers[id].marker._icon, moving ? bearing : 0);
+        wrap.style.transform = 'rotate(' + effectiveBearing + 'deg)';
       }
     } else {
-      const isMoving = parseFloat(speed) > 2;
-      const movingClass = isMoving ? ' moving' : '';
-      const arrow = '<svg class="tram-arrow" width="8" height="14" viewBox="0 0 8 14" xmlns="http://www.w3.org/2000/svg"><polygon points="0,0 8,7 0,14" fill="' + def.color + '" stroke="rgba(255,255,255,0.35)" stroke-width="1"/></svg>';
-      const html = '<div class="tram-wrap' + movingClass + '" id="vm-' + id + '">' +
+      // New marker — always show arrow, rotate to bearing (or 0 if no data yet)
+      const initBearing = parseFloat(speed) > 2 ? bearing : 0;
+      const arrow = '<svg class="tram-arrow" width="8" height="14" viewBox="0 0 8 14" xmlns="http://www.w3.org/2000/svg"><polygon points="0,0 8,7 0,14" fill="' + def.color + '" stroke="rgba(255,255,255,0.4)" stroke-width="1"/></svg>';
+      const html = '<div class="tram-wrap moving" id="vm-' + id + '" style="transform:rotate(' + initBearing + 'deg)">' +
         '<div class="tram-marker" style="background:' + def.color + '">' + routeId + '</div>' +
         arrow +
         '</div>';
@@ -717,15 +718,7 @@ function processVehicles(vehicles) {
       const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
       marker.on('click', () => showInfo(id));
       if (isVisible) marker.addTo(map);
-      // Apply rotation to the Leaflet icon element after adding to map
-      if (isVisible && marker._icon) {
-        applyMarkerRotation(marker._icon, isMoving ? bearing : 0);
-      } else {
-        marker.on('add', () => {
-          if (marker._icon) applyMarkerRotation(marker._icon, isMoving ? bearing : 0);
-        });
-      }
-      markers[id] = { marker, routeId, data: { routeId, vehicleId, speed, bearing, tripId, lat, lng } };
+      markers[id] = { marker, routeId, lastBearing: initBearing, data: { routeId, vehicleId, speed, bearing: initBearing, tripId, lat, lng } };
     }
 
     const el = document.getElementById('vm-' + id);
