@@ -199,11 +199,14 @@
   }
   .leaflet-control-attribution a { color: var(--muted) !important; }
 
+  .tram-icon-outer {
+    /* Override Leaflet default - keep its translate but allow our rotation */
+    background: none !important; border: none !important;
+  }
   .tram-wrap {
     display: flex; align-items: center; cursor: pointer;
-    transform-origin: 13px 9px;
+    transform-origin: 13px 9px; /* centre of the 26x18 badge */
     filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
-    transition: filter 0.2s;
   }
   .tram-wrap:hover { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6)) brightness(1.2); }
   .tram-wrap.selected { filter: drop-shadow(0 0 5px rgba(255,255,255,0.8)); }
@@ -436,13 +439,11 @@ let TRAM_NETWORK = null;
 
 // ── Map init ─────────────────────────────────────────────────────────────────
 function applyMarkerRotation(iconEl, degrees) {
-  // Leaflet sets transform as translate3d(...) for positioning
-  // We append our rotation while preserving Leaflet's translate
-  iconEl.style.transformOrigin = '13px 9px';
-  const t = iconEl.style.transform || '';
-  // Remove any previous rotation we added
-  const base = t.replace(/ *rotate\([^)]+\)/g, '');
-  iconEl.style.transform = degrees ? base + ' rotate(' + degrees + 'deg)' : base;
+  // Rotate the inner tram-wrap, not the Leaflet positioning element
+  const wrap = iconEl.querySelector('.tram-wrap');
+  if (wrap) {
+    wrap.style.transform = degrees ? 'rotate(' + degrees + 'deg)' : '';
+  }
 }
 function initMap() {
   map = L.map('map', {
