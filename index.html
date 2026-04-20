@@ -462,16 +462,18 @@ let stopMarkers = {}; // stopId -> { marker, routes[] }
 
 function drawStopDots() {
   if (!TRAM_NETWORK) return;
-  TRAM_NETWORK.stops.forEach(stop => {
+  TRAM_NETWORK.stops.forEach((stop, idx) => {
+    const routes = stop.r || [];
     const marker = L.circleMarker(stop.p, {
       radius: 3, color: '#fff', weight: 1.5,
       fillColor: '#64748b', fillOpacity: 1,
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
-    // Only show if at least one of this stop's routes is active
-    if (stop.r && stop.r.some(r => activeRoutes.has(r))) {
+    // Show if at least one of this stop's routes is currently active
+    if (routes.some(r => activeRoutes.has(r))) {
       marker.addTo(map);
     }
-    stopMarkers[stop.i] = { marker, routes: stop.r || [] };
+    // Use index as key to avoid any ID collision issues
+    stopMarkers[idx] = { marker, routes };
   });
 }
 
