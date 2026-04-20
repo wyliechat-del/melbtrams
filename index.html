@@ -708,9 +708,8 @@ function processVehicles(vehicles) {
     if (markers[id]) {
       markers[id].marker.setLatLng([lat, lng]);
       const prevBearing = markers[id].lastBearing || 0;
-      const moving = parseFloat(speed) > 2;
-      const effectiveBearing = moving ? bearing : prevBearing;
-      if (moving) markers[id].lastBearing = bearing;
+      const effectiveBearing = (bearing && bearing > 1) ? bearing : prevBearing;
+      if (bearing && bearing > 1) markers[id].lastBearing = bearing;
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
       // Update arrow rotation - rotate only the <g> inside SVG, circle stays upright
       const iconEl = markers[id].marker._icon;
@@ -719,7 +718,8 @@ function processVehicles(vehicles) {
         if (gEl) gEl.setAttribute('transform', 'rotate(' + effectiveBearing + ')');
       }
     } else {
-      const initBearing = parseFloat(speed) > 2 ? bearing : 0;
+      const initBearing = bearing || 0;
+      if (Object.keys(markers).length < 3) console.log('TRAM DEBUG', routeId, 'speed:', speed, 'bearing:', bearing, 'v.bearing:', v.bearing);
       const icon = L.divIcon({
         className: 'tram-icon-outer',
         html: makeTramSVG(routeId, def.color, initBearing, id),
