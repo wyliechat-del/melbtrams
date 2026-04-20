@@ -457,30 +457,30 @@ function drawRouteLines() {
   });
 }
 
-// Global stop layer — all stops in one layer group for easy toggle
-let stopLayer = null;
+// Stop markers keyed by stop ID for per-route visibility
+let stopMarkers = {}; // stopId -> { marker, routes[] }
 
 function drawStopDots() {
   if (!TRAM_NETWORK) return;
-  stopLayer = L.layerGroup();
   TRAM_NETWORK.stops.forEach(stop => {
-    L.circleMarker(stop.p, {
+    const marker = L.circleMarker(stop.p, {
       radius: 3, color: '#fff', weight: 1.5,
       fillColor: '#64748b', fillOpacity: 1,
-    }).bindTooltip(stop.n, { sticky: true, direction: 'top' })
-      .addTo(stopLayer);
+    }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
+    // Only show if at least one of this stop's routes is active
+    if (stop.r && stop.r.some(r => activeRoutes.has(r))) {
+      marker.addTo(map);
+    }
+    stopMarkers[stop.i] = { marker, routes: stop.r || [] };
   });
-  stopLayer.addTo(map);
 }
 
 function updateStopVisibility() {
-  // Show stop if at least one active route is on
-  // Since stops aren't tagged by route in this dataset, we show all when
-  // any route is on, hide all only when ALL routes are off
-  if (!stopLayer) return;
-  const anyOn = activeRoutes.size > 0;
-  if (anyOn) stopLayer.addTo(map);
-  else map.removeLayer(stopLayer);
+  Object.values(stopMarkers).forEach(({ marker, routes }) => {
+    const shouldShow = routes.some(r => activeRoutes.has(r));
+    if (shouldShow) marker.addTo(map);
+    else map.removeLayer(marker);
+  });
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
