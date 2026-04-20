@@ -599,34 +599,51 @@ function updateSchematicMarkers() {
 
 function renderSchematicVehicles(vehicles) {
   const container = document.getElementById('schematic-markers');
+  if (!container) return;
   const seen = new Set();
 
   vehicles.forEach(v => {
-    if (!activeRoutes.has(v.routeId)) return;
-    const def = ROUTE_DEFS[v.routeId];
-    if (!def) return;
-    seen.add(v.id);
+    const lat = v.lat, lng = v.lng;
+    if (!lat || !lng || lat === 0 || lng === 0) return;
+    if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
 
-    const [px, py] = gpsToSchematic(v.lat, v.lng);
-    let el = schematicMarkerEls[v.id];
+    // Parse route ID same way as processVehicles
+    let routeId = '?';
+    if (v.routeId) {
+      const m = v.routeId.match(/vic-03-(\w+):?$/);
+      routeId = m ? m[1] : String(v.routeId);
+    }
+
+    if (!activeRoutes.has(routeId)) return;
+    const def = ROUTE_DEFS[routeId];
+    if (!def) return;
+
+    const id = v.id || (lat + ',' + lng);
+    seen.add(id);
+
+    const [px, py] = gpsToSchematic(lat, lng);
+    let el = schematicMarkerEls[id];
     if (!el) {
       el = document.createElement('div');
       el.className = 'schematic-tram';
-      el.textContent = v.routeId;
+      el.textContent = routeId;
       el.style.background = def.color;
-      el.dataset.vehicleId = v.id;
-      el.addEventListener('click', () => showVehicleInfo(v));
+      el.dataset.routeId = routeId;
+      el.dataset.vehicleId = id;
+      el.addEventListener('click', () => {
+        const speed = v.speed ? (v.speed * 3.6).toFixed(0) : '0';
+        showVehicleInfo({ routeId, vehicleLabel: v.vehicleLabel || id, speed, bearing: v.bearing || 0, tripId: v.tripId || '—', lat, lng });
+      });
       container.appendChild(el);
-      schematicMarkerEls[v.id] = el;
+      schematicMarkerEls[id] = el;
     }
-    el.dataset.lat = v.lat;
-    el.dataset.lng = v.lng;
+    el.dataset.lat = lat;
+    el.dataset.lng = lng;
     el.style.left = px + 'px';
     el.style.top  = py + 'px';
-    el.style.background = def.color;
   });
 
-  // Remove stale
+  // Remove stale markers
   Object.keys(schematicMarkerEls).forEach(id => {
     if (!seen.has(id)) {
       schematicMarkerEls[id].remove();
@@ -825,7 +842,7 @@ function toggleRoute(id) {
   updateStopVisibility();
   // Sync schematic marker visibility
   Object.entries(schematicMarkerEls).forEach(([vid, el]) => {
-    el.style.display = activeRoutes.has(el.textContent.trim()) ? '' : 'none';
+    el.style.display = activeRoutes.has(el.dataset.routeId) ? '' : 'none';
   });
 }
 
