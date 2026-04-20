@@ -725,6 +725,7 @@ function processVehicles(vehicles) {
       if (distMoved > 0.00005) { // ~5m threshold to avoid GPS jitter
         effectiveBearing = calcBearing(prevLat, prevLng, lat, lng);
         markers[id].lastBearing = effectiveBearing;
+        console.log('MOVED', routeId, 'dist:', distMoved.toFixed(6), 'bearing:', effectiveBearing.toFixed(0));
       }
       markers[id].marker.setLatLng([lat, lng]);
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
