@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Melbourne Trams</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
@@ -25,9 +25,11 @@
   }
 
   html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font-ui); }
+  /* iOS Safari safe area support */
+  html { height: -webkit-fill-available; }
 
   /* ── Layout ── */
-  #app { display: flex; flex-direction: column; height: 100vh; }
+  #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; min-height: -webkit-fill-available; }
 
   #topbar {
     display: flex; align-items: center; justify-content: space-between;
@@ -132,6 +134,7 @@
     display: none;
     background: var(--surface); border-top: 1px solid var(--border);
     padding: 6px 10px 8px; gap: 6px; flex-direction: column;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
     z-index: 1000; flex-shrink: 0;
   }
   #mobile-controls {
