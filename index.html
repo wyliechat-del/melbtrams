@@ -200,24 +200,15 @@
   .leaflet-control-attribution a { color: var(--muted) !important; }
 
   .tram-icon-outer {
-    /* Override Leaflet default - keep its translate but allow our rotation */
-    background: none !important; border: none !important;
+    background: none !important; border: none !important; overflow: visible !important;
   }
   .tram-wrap {
-    display: flex; align-items: center; cursor: pointer;
-    transform-origin: 13px 9px; /* centre of the 26x18 badge */
-    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+    cursor: pointer;
+    filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7));
+    transition: filter 0.15s;
   }
-  .tram-wrap:hover { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6)) brightness(1.2); }
-  .tram-wrap.selected { filter: drop-shadow(0 0 5px rgba(255,255,255,0.8)); }
-  .tram-marker {
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 4px; font-weight: 700; font-family: 'DM Mono', monospace;
-    font-size: 10px; color: #fff; border: 2px solid rgba(255,255,255,0.35);
-    width: 26px; height: 18px; flex-shrink: 0;
-  }
-  .tram-arrow { display: none; align-items: center; margin-left: -1px; }
-  .tram-wrap.moving .tram-arrow { display: flex; }
+  .tram-wrap:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
+  .tram-wrap.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
   /* ── Mobile responsive ── */
   @media (max-width: 640px) {
@@ -438,6 +429,28 @@ let selectedVehicle = null, refreshInterval = null;
 let TRAM_NETWORK = null;
 
 // ── Map init ─────────────────────────────────────────────────────────────────
+function makeTramSVG(routeId, color, bearing, vehicleId) {
+  // Teardrop: circle body with a pointed tail indicating direction of travel
+  // The SVG is 28x28, centre at 14,14. We rotate the whole SVG.
+  // Shape: rounded rect (badge) with a triangular tail pointing "up" (north=0deg)
+  const r = routeId.length > 2 ? 9 : 10; // circle radius
+  const label = routeId.length > 2 ? 8 : 9; // font size
+  return '<div class="tram-wrap" id="vm-' + vehicleId + '">' +
+    '<svg width="28" height="28" viewBox="-14 -14 28 28" xmlns="http://www.w3.org/2000/svg"' +
+    ' style="transform:rotate(' + bearing + 'deg);overflow:visible;display:block;">' +
+    // Tail pointing up (direction of travel)
+    '<polygon points="0,-' + (r+7) + ' -4,-' + (r-2) + ' 4,-' + (r-2) + '"' +
+    ' fill="' + color + '" stroke="rgba(255,255,255,0.5)" stroke-width="1" stroke-linejoin="round"/>' +
+    // Circle body
+    '<circle cx="0" cy="0" r="' + r + '"' +
+    ' fill="' + color + '" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>' +
+    // Route label
+    '<text x="0" y="0.35em" text-anchor="middle" dominant-baseline="middle"' +
+    ' font-family="DM Mono,monospace" font-weight="700" font-size="' + label + '" fill="#fff">' +
+    routeId + '</text>' +
+    '</svg></div>';
+}
+
 function applyMarkerRotation(iconEl, degrees) {
   // Rotate the inner tram-wrap, not the Leaflet positioning element
   const wrap = iconEl.querySelector('.tram-wrap');
@@ -690,30 +703,24 @@ function processVehicles(vehicles) {
 
     if (markers[id]) {
       markers[id].marker.setLatLng([lat, lng]);
-      // Persist last known bearing — only update if actually moving
       const prevBearing = markers[id].lastBearing || 0;
       const moving = parseFloat(speed) > 2;
       const effectiveBearing = moving ? bearing : prevBearing;
       if (moving) markers[id].lastBearing = bearing;
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
-      // Update wrap rotation directly via id
-      const wrap = document.getElementById('vm-' + id);
-      if (wrap) {
-        wrap.style.transform = 'rotate(' + effectiveBearing + 'deg)';
+      // Update SVG rotation directly in the DOM
+      const iconEl = markers[id].marker._icon;
+      if (iconEl) {
+        const svgEl = iconEl.querySelector('svg');
+        if (svgEl) svgEl.style.transform = 'rotate(' + effectiveBearing + 'deg)';
       }
     } else {
-      // New marker — always show arrow, rotate to bearing (or 0 if no data yet)
       const initBearing = parseFloat(speed) > 2 ? bearing : 0;
-      const arrow = '<svg class="tram-arrow" width="8" height="14" viewBox="0 0 8 14" xmlns="http://www.w3.org/2000/svg"><polygon points="0,0 8,7 0,14" fill="' + def.color + '" stroke="rgba(255,255,255,0.4)" stroke-width="1"/></svg>';
-      const html = '<div class="tram-wrap moving" id="vm-' + id + '" style="transform:rotate(' + initBearing + 'deg)">' +
-        '<div class="tram-marker" style="background:' + def.color + '">' + routeId + '</div>' +
-        arrow +
-        '</div>';
       const icon = L.divIcon({
         className: 'tram-icon-outer',
-        html,
-        iconSize: [34, 18],
-        iconAnchor: [13, 9],
+        html: makeTramSVG(routeId, def.color, initBearing, id),
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
       });
       const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
       marker.on('click', () => showInfo(id));
