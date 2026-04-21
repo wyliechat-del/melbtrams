@@ -508,19 +508,19 @@ function projectPoint(lat, lng, bearing, metres) {
   return [toDeg(lat2), toDeg(lng2)];
 }
 
-// Dead reckoning: animate trams forward from last known position
+// Dead reckoning: smoothly animate trams forward from last known position
 function startDeadReckoning() {
   if (deadReckonTimer) cancelAnimationFrame(deadReckonTimer);
   function tick() {
     if (!lastFetchTime) return;
-    const elapsed = (Date.now() - lastFetchTime) / 1000; // seconds since last fetch
-    // Only project up to 60s ahead — beyond that data is too stale
-    const projElapsed = Math.min(elapsed, 60);
+    const elapsed = (Date.now() - lastFetchTime) / 1000;
+    // Cap projection at 45s — beyond that hold position
+    const projElapsed = Math.min(elapsed, 45);
 
     Object.values(markers).forEach(m => {
       const speed = m.calcSpeed || 0;
       const bearing = m.lastBearing || 0;
-      if (speed < 0.5) return; // don't move stationary trams
+      if (speed < 1) return; // don't animate stopped trams
       const dist = speed * projElapsed;
       const [pLat, pLng] = projectPoint(m.data.lat, m.data.lng, bearing, dist);
       m.marker.setLatLng([pLat, pLng]);
@@ -528,6 +528,23 @@ function startDeadReckoning() {
     deadReckonTimer = requestAnimationFrame(tick);
   }
   tick();
+}
+
+// Smoothly transition marker from current displayed position to new true position
+function smoothSnapMarker(marker, toLat, toLng) {
+  const from = marker.getLatLng();
+  const startTime = Date.now();
+  const duration = 2000; // 2 second smooth transition
+  function animate() {
+    const t = Math.min((Date.now() - startTime) / duration, 1);
+    // Ease in-out
+    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+    const lat = from.lat + (toLat - from.lat) * ease;
+    const lng = from.lng + (toLng - from.lng) * ease;
+    marker.setLatLng([lat, lng]);
+    if (t < 1) requestAnimationFrame(animate);
+  }
+  requestAnimationFrame(animate);
 }
 
 function calcBearing(lat1, lng1, lat2, lng2) {
@@ -854,17 +871,18 @@ function processVehicles(vehicles) {
       if (distMoved > 0.00005) {
         effectiveBearing = calcBearing(prevLat, prevLng, lat, lng);
         markers[id].lastBearing = effectiveBearing;
-        // Estimate speed from how far tram moved vs time since last fetch
-        if (lastFetchTime) {
-          const elapsed = (Date.now() - lastFetchTime) / 1000;
-          const distMetres = calcDistMetres(prevLat, prevLng, lat, lng);
-          calcSpeed = elapsed > 0 ? Math.min(distMetres / elapsed, 20) : 0;
-        }
+        // Estimate speed from distance moved vs fetch interval (~10s)
+        const distMetres = calcDistMetres(prevLat, prevLng, lat, lng);
+        const fetchInterval = lastFetchTime ? (Date.now() - lastFetchTime) / 1000 : 10;
+        const rawSpeed = fetchInterval > 0 ? Math.min(distMetres / fetchInterval, 20) : 0;
+        // Blend with previous speed (70% new, 30% old) to smooth spikes
+        const prevSpeed = markers[id].calcSpeed || 0;
+        calcSpeed = prevSpeed > 0 ? rawSpeed * 0.7 + prevSpeed * 0.3 : rawSpeed;
         if (iconEl) { const gEl = iconEl.querySelector('g'); if (gEl) gEl.style.display = ''; }
       }
 
-      // Snap back to true position on each API update (dead reckoning resets here)
-      markers[id].marker.setLatLng([lat, lng]);
+      // Smoothly transition to true position on each API update
+      smoothSnapMarker(markers[id].marker, lat, lng);
       markers[id].calcSpeed = calcSpeed;
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
       // Update arrow rotation
