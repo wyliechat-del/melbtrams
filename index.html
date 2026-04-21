@@ -530,22 +530,7 @@ function startDeadReckoning() {
   tick();
 }
 
-// Smoothly transition marker from current displayed position to new true position
-function smoothSnapMarker(marker, toLat, toLng) {
-  const from = marker.getLatLng();
-  const startTime = Date.now();
-  const duration = 2000; // 2 second smooth transition
-  function animate() {
-    const t = Math.min((Date.now() - startTime) / duration, 1);
-    // Ease in-out
-    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
-    const lat = from.lat + (toLat - from.lat) * ease;
-    const lng = from.lng + (toLng - from.lng) * ease;
-    marker.setLatLng([lat, lng]);
-    if (t < 1) requestAnimationFrame(animate);
-  }
-  requestAnimationFrame(animate);
-}
+
 
 function calcBearing(lat1, lng1, lat2, lng2) {
   const toRad = d => d * Math.PI / 180;
@@ -875,14 +860,24 @@ function processVehicles(vehicles) {
         const distMetres = calcDistMetres(prevLat, prevLng, lat, lng);
         const fetchInterval = lastFetchTime ? (Date.now() - lastFetchTime) / 1000 : 10;
         const rawSpeed = fetchInterval > 0 ? Math.min(distMetres / fetchInterval, 20) : 0;
-        // Blend with previous speed (70% new, 30% old) to smooth spikes
+        // Blend with previous speed to smooth spikes, then apply 75% factor
+        // (deliberately conservative so trams don't overshoot true position)
         const prevSpeed = markers[id].calcSpeed || 0;
-        calcSpeed = prevSpeed > 0 ? rawSpeed * 0.7 + prevSpeed * 0.3 : rawSpeed;
+        const blended = prevSpeed > 0 ? rawSpeed * 0.7 + prevSpeed * 0.3 : rawSpeed;
+        calcSpeed = blended * 0.75;
         if (iconEl) { const gEl = iconEl.querySelector('g'); if (gEl) gEl.style.display = ''; }
       }
 
-      // Smoothly transition to true position on each API update
-      smoothSnapMarker(markers[id].marker, lat, lng);
+      // Only update position if API says tram is ahead of where we've projected it
+      // Never jump backward — let dead reckoning hold until API catches up
+      const current = markers[id].marker.getLatLng();
+      const distToTrue = calcDistMetres(current.lat, current.lng, lat, lng);
+      const distFromBase = calcDistMetres(markers[id].data.lat, markers[id].data.lng, lat, lng);
+      // If true position is ahead of displayed, or tram has genuinely changed direction, update
+      if (distToTrue < 30 || distFromBase > distToTrue) {
+        markers[id].marker.setLatLng([lat, lng]);
+      }
+      // Otherwise hold current dead-reckoned position and let it coast forward
       markers[id].calcSpeed = calcSpeed;
       markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
       // Update arrow rotation
