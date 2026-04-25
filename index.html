@@ -967,7 +967,11 @@ function showScheduleInfo(tramId) {
 
   // Find next stop
   const cs = nowSecs();
-  const nextStopIdx = t.trip.stops.findIndex(s => t.trip.start + s[1] > cs);
+  // Apply same delay offset used for positioning so next stop matches displayed location
+  const delay = routeDelays[t.routeId];
+  const delaySecs = delay && delay.samples >= 2 ? delay.delaySecs : 0;
+  const adjustedCs = cs - delaySecs;
+  const nextStopIdx = t.trip.stops.findIndex(s => t.trip.start + s[1] > adjustedCs);
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
@@ -975,7 +979,7 @@ function showScheduleInfo(tramId) {
     const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
     const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
     const arrSecs = t.trip.start + ns[1];
-    const minsAway = Math.round((arrSecs - cs) / 60);
+    const minsAway = Math.round((arrSecs - (cs - delaySecs)) / 60);
     // Convert schedule seconds to HH:MM — schedule is in local Melbourne time
     const arrSecsLocal = arrSecs % 86400;
     const arrHH = Math.floor(arrSecsLocal / 3600) % 24;
