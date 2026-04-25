@@ -988,7 +988,7 @@ function showScheduleInfo(tramId) {
   }
 
   const nameParts = def.name.split(' – ');  // split on em dash
-  const dirLabel = t.trip.dir === 0
+  const dirLabel = t.trip.dir === 1
     ? '→ ' + (nameParts[1] || def.name)
     : '← ' + (nameParts[0] || def.name);
 
