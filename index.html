@@ -976,9 +976,11 @@ function showScheduleInfo(tramId) {
     const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
     const arrSecs = t.trip.start + ns[1];
     const minsAway = Math.round((arrSecs - cs) / 60);
-    const arrTime = new Date(0);
-    arrTime.setSeconds(arrSecs % 86400);
-    const arrStr = arrTime.toTimeString().slice(0,5);
+    // Convert schedule seconds to HH:MM — schedule is in local Melbourne time
+    const arrSecsLocal = arrSecs % 86400;
+    const arrHH = Math.floor(arrSecsLocal / 3600) % 24;
+    const arrMM = Math.floor((arrSecsLocal % 3600) / 60);
+    const arrStr = String(arrHH).padStart(2,'0') + ':' + String(arrMM).padStart(2,'0');
     nextStopHtml = stopName
       ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
         stopName.n + '</span></div>' +
