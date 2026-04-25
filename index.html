@@ -472,7 +472,32 @@ function nowSecs() {
   return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
 }
 
+// Find position on a shape geometry at a given distance along the path
+function posOnShape(shape, dist) {
+  if (!shape || shape.length === 0) return null;
+  if (dist <= shape[0][2]) return { lat: shape[0][0], lng: shape[0][1] };
+  if (dist >= shape[shape.length-1][2]) {
+    const p = shape[shape.length-1];
+    return { lat: p[0], lng: p[1] };
+  }
+  // Binary search for segment
+  let lo = 0, hi = shape.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (shape[mid][2] <= dist) lo = mid; else hi = mid;
+  }
+  const p0 = shape[lo], p1 = shape[hi];
+  const segLen = p1[2] - p0[2];
+  const frac = segLen > 0 ? (dist - p0[2]) / segLen : 0;
+  return {
+    lat: p0[0] + (p1[0] - p0[0]) * frac,
+    lng: p0[1] + (p1[1] - p0[1]) * frac,
+    bearing: calcBearing(p0[0], p0[1], p1[0], p1[1])
+  };
+}
+
 // Given a trip and current time, return interpolated {lat, lng, bearing} or null
+// Uses shape geometry for smooth path-following
 function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   const tripStart = trip.start;
   const tripStops = trip.stops; // [stop_id, delta_secs, shape_dist]
@@ -481,55 +506,67 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   const absTimes = tripStops.map(s => tripStart + s[1]);
   const tripEnd  = absTimes[absTimes.length - 1];
 
-  // Not yet started or already finished
-  if (currentSecs < absTimes[0] - 120) return null;  // 2min before first stop
-  if (currentSecs > tripEnd + 120) return null;       // 2min after last stop
+  // Not active yet or already finished
+  if (currentSecs < absTimes[0] - 120) return null;
+  if (currentSecs > tripEnd + 120) return null;
 
-  // Find which segment we're in
+  // Get shape geometry for this trip (route + direction)
+  const routeDirs = network_routes[trip.routeId];
+  const shape = routeDirs ? (routeDirs[String(trip.dir)] || routeDirs['0']) : null;
+
+  // Find which inter-stop segment we're in
   let segIdx = -1;
   for (let i = 0; i < absTimes.length - 1; i++) {
     if (currentSecs >= absTimes[i] && currentSecs <= absTimes[i+1]) {
-      segIdx = i;
-      break;
+      segIdx = i; break;
     }
   }
 
-  // Before first stop - show at first stop
+  // Before first stop
   if (segIdx === -1 && currentSecs < absTimes[0]) {
+    const d0 = tripStops[0][2];
+    if (shape) {
+      const p = posOnShape(shape, d0);
+      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true };
+    }
     const s = stops_dict[String(tripStops[0][0])];
     if (!s) return null;
-    const slat = Array.isArray(s) ? s[0] : s.lat;
-    const slng = Array.isArray(s) ? s[1] : s.lng;
-    return { lat: slat, lng: slng, bearing: 0, atStop: true };
+    return { lat: s[0], lng: s[1], bearing: 0, atStop: true };
   }
-  // After last stop - show at last stop
+
+  // After last stop
   if (segIdx === -1) {
+    const dLast = tripStops[tripStops.length-1][2];
+    if (shape) {
+      const p = posOnShape(shape, dLast);
+      return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: true };
+    }
     const s = stops_dict[String(tripStops[tripStops.length-1][0])];
     if (!s) return null;
-    const slat = Array.isArray(s) ? s[0] : s.lat;
-    const slng = Array.isArray(s) ? s[1] : s.lng;
-    return { lat: slat, lng: slng, bearing: 0, atStop: true };
+    return { lat: s[0], lng: s[1], bearing: 0, atStop: true };
   }
 
-  // Interpolate between stops[segIdx] and stops[segIdx+1]
+  // Interpolate shape distance between the two stops
   const t0 = absTimes[segIdx], t1 = absTimes[segIdx+1];
   const frac = t1 > t0 ? (currentSecs - t0) / (t1 - t0) : 0;
+  const d0 = tripStops[segIdx][2], d1 = tripStops[segIdx+1][2];
+  const dist = d0 + (d1 - d0) * frac;
 
+  if (shape) {
+    const p = posOnShape(shape, dist);
+    return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: false };
+  }
+
+  // Fallback: straight line between stops if no shape
   const s0 = stops_dict[String(tripStops[segIdx][0])];
   const s1 = stops_dict[String(tripStops[segIdx+1][0])];
   if (!s0 || !s1) return null;
-
-  // stops_dict values are [lat, lng] arrays
-  const s0lat = Array.isArray(s0) ? s0[0] : s0.lat;
-  const s0lng = Array.isArray(s0) ? s0[1] : s0.lng;
-  const s1lat = Array.isArray(s1) ? s1[0] : s1.lat;
-  const s1lng = Array.isArray(s1) ? s1[1] : s1.lng;
-
-  const lat = s0lat + (s1lat - s0lat) * frac;
-  const lng = s0lng + (s1lng - s0lng) * frac;
-  const bearing = calcBearing(s0lat, s0lng, s1lat, s1lng);
-
-  return { lat, lng, bearing, atStop: false };
+  return {
+    lat: s0[0] + (s1[0] - s0[0]) * frac,
+    lng: s0[1] + (s1[1] - s0[1]) * frac,
+    bearing: calcBearing(s0[0], s0[1], s1[0], s1[1]),
+    atStop: false
+  };
 }
 
 // Find active trips right now for all routes
@@ -742,6 +779,8 @@ function tickSchedule() {
     const def = ROUTE_DEFS[routeId];
     if (!def) return;
 
+    // Attach routeId to trip so interpolateTrip can look up shape
+    trip.routeId = routeId;
     const pos = interpolateTrip(trip, SCHEDULE.stops, TRAM_NETWORK.routes, cs);
     if (!pos) return;
 
