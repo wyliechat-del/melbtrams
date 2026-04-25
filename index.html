@@ -718,11 +718,15 @@ function startScheduleAnimation() {
 }
 
 function tickSchedule() {
-  if (!SCHEDULE || !TRAM_NETWORK) return;
+  if (!SCHEDULE || !TRAM_NETWORK) {
+    console.log('tickSchedule: waiting - SCHEDULE:', !!SCHEDULE, 'TRAM_NETWORK:', !!TRAM_NETWORK);
+    return;
+  }
 
   // Handle midnight rollover: if seconds wrap, reload schedule
   const cs = nowSecs();
   const active = getActiveTrips(cs);
+  if (active.length === 0) console.log('tickSchedule: no active trips at', cs, 'secs (', Math.floor(cs/3600) + ':' + String(Math.floor((cs%3600)/60)).padStart(2,'0'), ')');
 
   const seen = new Set();
 
@@ -747,7 +751,7 @@ function tickSchedule() {
 
     if (scheduleTrams[tramId]) {
       // Update existing marker
-      scheduleTrams[tramId].marker.setLatLng([finalLat, finalLng]);
+      try { scheduleTrams[tramId].marker.setLatLng([finalLat, finalLng]); } catch(e) {}
       // Update bearing
       const iconEl = scheduleTrams[tramId].marker._icon;
       if (iconEl) {
@@ -1138,6 +1142,7 @@ function updateClock() {
 window.addEventListener('DOMContentLoaded', () => {
   initMap();
   buildSidebar();
+  loadAndDrawRoutes();   // loads network + schedule, starts animation
   fetchTrams();
   setInterval(updateClock, 1000);
   setInterval(fetchTrams, 10000);
