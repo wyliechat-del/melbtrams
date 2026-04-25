@@ -749,11 +749,8 @@ function tickSchedule() {
     const tramId = 'sched_' + trip.id;
     seen.add(tramId);
 
-    // Check if GPS has a confirmed position for this trip
-    const gpsMatch = findGPSMatch(routeId, trip, pos);
-
-    const finalLat = gpsMatch ? gpsMatch.lat : pos.lat;
-    const finalLng = gpsMatch ? gpsMatch.lng : pos.lng;
+    const finalLat = pos.lat;
+    const finalLng = pos.lng;
     const bearing  = pos.bearing;
 
     if (scheduleTrams[tramId]) {
@@ -798,16 +795,7 @@ function tickSchedule() {
   updateTramCount();
 }
 
-// Find a GPS vehicle matching this scheduled trip (same route, nearby position)
-function findGPSMatch(routeId, trip, schedPos) {
-  let best = null, bestDist = 0.005; // ~500m threshold
-  Object.values(markers).forEach(m => {
-    if (m.routeId !== routeId) return;
-    const d = Math.abs(m.data.lat - schedPos.lat) + Math.abs(m.data.lng - schedPos.lng);
-    if (d < bestDist) { best = m.data; bestDist = d; }
-  });
-  return best;
-}
+
 
 function showScheduleInfo(tramId) {
   const t = scheduleTrams[tramId];
@@ -1027,7 +1015,7 @@ async function fetchTrams() {
     const vehicles = json.vehicles || [];
 
     processVehicles(vehicles);
-    setStatus('live', vehicles.length + ' vehicles');
+    setStatus('live', Object.values(scheduleTrams).length + ' trams');
     document.getElementById('error-banner').style.display = 'none';
 
     const now = new Date();
@@ -1047,41 +1035,8 @@ async function fetchTrams() {
 }
 
 function processVehicles(vehicles) {
-  // GPS data is stored for position correction but not shown as primary markers
-  // Primary display is timetable-based (scheduleTrams)
-  const seen = new Set();
-
-  vehicles.forEach(v => {
-    const lat = v.lat, lng = v.lng;
-    if (!lat || !lng || lat === 0 || lng === 0) return;
-    if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
-
-    const id = v.id || (lat + ',' + lng);
-    let routeId = '?';
-    if (v.routeId) {
-      const m = v.routeId.match(/vic-03-(\w+):?$/);
-      routeId = m ? m[1] : String(v.routeId);
-    }
-    const vehicleId = v.vehicleLabel || id;
-    const speed = v.speed ? (v.speed * 3.6).toFixed(0) : '0';
-    const tripId = v.tripId || '—';
-    seen.add(id);
-
-    // Store GPS data for schedule matching (no map marker)
-    if (markers[id]) {
-      markers[id].data = { routeId, vehicleId, speed, bearing: 0, tripId, lat, lng };
-    } else {
-      markers[id] = { routeId, lastBearing: 0,
-        data: { routeId, vehicleId, speed, bearing: 0, tripId, lat, lng } };
-    }
-  });
-
-  // Remove stale GPS records
-  Object.keys(markers).forEach(id => {
-    if (!seen.has(id)) delete markers[id];
-  });
-
-  // Update route counts from schedule trams
+  // GPS data no longer used for positioning - pure timetable only
+  // Just update the vehicle count display
   const counts = {};
   Object.values(scheduleTrams).forEach(t => {
     counts[t.routeId] = (counts[t.routeId] || 0) + 1;
@@ -1090,7 +1045,6 @@ function processVehicles(vehicles) {
     const el = document.getElementById('rc-' + id);
     if (el) el.textContent = counts[id] || 0;
   });
-
   updateTramCount();
 }
 
