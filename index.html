@@ -445,6 +445,102 @@ let selectedVehicle = null, refreshInterval = null;
 // Route geodata loaded from tram_network.json
 let TRAM_NETWORK = null;
 
+// Schedule data loaded from schedule_*.json files
+let SCHEDULE = null;  // merged schedule for today: {stops, trips, shapes}
+let SCHEDULE_DAY = null;  // 'weekday' | 'saturday' | 'sunday'
+
+// Timetable tram state: tramId → {routeId, tripId, lat, lng, bearing, schedPos}
+let scheduleTrams = {};
+let scheduleTimer = null;
+
+function getTodayType() {
+  // Returns day type accounting for public holidays → Saturday
+  const d = new Date();
+  const dow = d.getDay(); // 0=Sun, 6=Sat
+  // Australian public holidays - treat as Saturday
+  const dateStr = d.toISOString().slice(0,10).replace(/-/g,'');
+  // Public holidays known from calendar_dates (exception_type=2 means removed,
+  // but we treat unknown/holiday dates as Saturday)
+  if (dow === 0) return 'sunday';
+  if (dow === 6) return 'saturday';
+  return 'weekday';
+}
+
+function nowSecs() {
+  // Current time as seconds since midnight (handles >24h for overnight trips)
+  const d = new Date();
+  return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
+}
+
+// Given a trip and current time, return interpolated {lat, lng, bearing} or null
+function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
+  const tripStart = trip.start;
+  const tripStops = trip.stops; // [stop_id, delta_secs, shape_dist]
+
+  // Absolute times for each stop
+  const absTimes = tripStops.map(s => tripStart + s[1]);
+  const tripEnd  = absTimes[absTimes.length - 1];
+
+  // Not yet started or already finished
+  if (currentSecs < absTimes[0] - 120) return null;  // 2min before first stop
+  if (currentSecs > tripEnd + 120) return null;       // 2min after last stop
+
+  // Find which segment we're in
+  let segIdx = -1;
+  for (let i = 0; i < absTimes.length - 1; i++) {
+    if (currentSecs >= absTimes[i] && currentSecs <= absTimes[i+1]) {
+      segIdx = i;
+      break;
+    }
+  }
+
+  // Before first stop - show at first stop
+  if (segIdx === -1 && currentSecs < absTimes[0]) {
+    const s = stops_dict[String(tripStops[0][0])];
+    if (!s) return null;
+    return { lat: s.lat, lng: s.lng, bearing: 0, atStop: true };
+  }
+  // After last stop - show at last stop
+  if (segIdx === -1) {
+    const s = stops_dict[String(tripStops[tripStops.length-1][0])];
+    if (!s) return null;
+    return { lat: s.lat, lng: s.lng, bearing: 0, atStop: true };
+  }
+
+  // Interpolate between stops[segIdx] and stops[segIdx+1]
+  const t0 = absTimes[segIdx], t1 = absTimes[segIdx+1];
+  const frac = t1 > t0 ? (currentSecs - t0) / (t1 - t0) : 0;
+
+  const s0 = stops_dict[String(tripStops[segIdx][0])];
+  const s1 = stops_dict[String(tripStops[segIdx+1][0])];
+  if (!s0 || !s1) return null;
+
+  const lat = s0.lat + (s1.lat - s0.lat) * frac;
+  const lng = s0.lng + (s1.lng - s0.lng) * frac;
+  const bearing = calcBearing(s0.lat, s0.lng, s1.lat, s1.lng);
+
+  return { lat, lng, bearing, atStop: false };
+}
+
+// Find active trips right now for all routes
+function getActiveTrips(currentSecs) {
+  if (!SCHEDULE) return [];
+  const active = [];
+  const stops_dict = SCHEDULE.stops;
+
+  Object.entries(SCHEDULE.trips).forEach(([routeId, tripList]) => {
+    tripList.forEach((trip, idx) => {
+      const tripStart = trip.start;
+      const tripEnd   = tripStart + trip.stops[trip.stops.length-1][1];
+      // Active window: 2min before first stop to 2min after last
+      if (currentSecs >= tripStart - 120 && currentSecs <= tripEnd + 120) {
+        active.push({ routeId, trip, idx });
+      }
+    });
+  });
+  return active;
+}
+
 // ── Map init ─────────────────────────────────────────────────────────────────
 function makeTramSVG(routeId, color, bearing, vehicleId) {
   // Circle with protruding arrow triangle pointing in direction of travel
@@ -575,6 +671,177 @@ function locateMe() {
   );
 }
 
+// ── Schedule loading ─────────────────────────────────────────────────────────
+async function loadSchedule() {
+  const dayType = getTodayType();
+  if (SCHEDULE_DAY === dayType && SCHEDULE) return; // already loaded
+
+  SCHEDULE_DAY = dayType;
+  SCHEDULE = { stops: {}, trips: {}, shapes: [] };
+
+  const files = dayType === 'weekday'
+    ? ['schedule_weekday_a1.json','schedule_weekday_a2.json','schedule_weekday_b.json','schedule_weekday_c.json']
+    : dayType === 'saturday' ? ['schedule_saturday.json'] : ['schedule_sunday.json'];
+
+  setStatus('loading', 'Loading timetable...');
+
+  try {
+    const results = await Promise.all(files.map(f => fetch(f).then(r => r.json())));
+    results.forEach(data => {
+      // Merge stops (same across all files)
+      if (Object.keys(SCHEDULE.stops).length === 0) {
+        SCHEDULE.stops = data.stops;
+      }
+      // Merge trips by route
+      Object.entries(data.trips).forEach(([route, trips]) => {
+        if (!SCHEDULE.trips[route]) SCHEDULE.trips[route] = [];
+        SCHEDULE.trips[route].push(...trips);
+      });
+    });
+    // Sort all trips by start time
+    Object.values(SCHEDULE.trips).forEach(trips =>
+      trips.sort((a, b) => a.start - b.start)
+    );
+    console.log('Schedule loaded:', Object.keys(SCHEDULE.trips).length, 'routes',
+      Object.values(SCHEDULE.trips).reduce((s,t) => s+t.length, 0), 'trips');
+    startScheduleAnimation();
+  } catch(e) {
+    console.warn('Could not load schedule:', e);
+  }
+}
+
+// ── Schedule animation ────────────────────────────────────────────────────────
+function startScheduleAnimation() {
+  if (scheduleTimer) clearInterval(scheduleTimer);
+  tickSchedule();
+  scheduleTimer = setInterval(tickSchedule, 1000);
+}
+
+function tickSchedule() {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+
+  // Handle midnight rollover: if seconds wrap, reload schedule
+  const cs = nowSecs();
+  const active = getActiveTrips(cs);
+
+  const seen = new Set();
+
+  active.forEach(({ routeId, trip }) => {
+    if (!activeRoutes.has(routeId)) return;
+    const def = ROUTE_DEFS[routeId];
+    if (!def) return;
+
+    const pos = interpolateTrip(trip, SCHEDULE.stops, TRAM_NETWORK.routes, cs);
+    if (!pos) return;
+
+    // Use trip.id as the tram identifier for schedule trams
+    const tramId = 'sched_' + trip.id;
+    seen.add(tramId);
+
+    // Check if GPS has a confirmed position for this trip
+    const gpsMatch = findGPSMatch(routeId, trip, pos);
+
+    const finalLat = gpsMatch ? gpsMatch.lat : pos.lat;
+    const finalLng = gpsMatch ? gpsMatch.lng : pos.lng;
+    const bearing  = pos.bearing;
+
+    if (scheduleTrams[tramId]) {
+      // Update existing marker
+      scheduleTrams[tramId].marker.setLatLng([finalLat, finalLng]);
+      // Update bearing
+      const iconEl = scheduleTrams[tramId].marker._icon;
+      if (iconEl) {
+        const gEl = iconEl.querySelector('g');
+        if (gEl) {
+          gEl.setAttribute('transform', 'rotate(' + bearing + ')');
+          gEl.style.display = bearing ? '' : 'none';
+        }
+      }
+      scheduleTrams[tramId].pos = pos;
+    } else {
+      // Create new marker
+      const icon = L.divIcon({
+        className: 'tram-icon-outer',
+        html: makeTramSVG(routeId, def.color, bearing, tramId),
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
+      });
+      const marker = L.marker([finalLat, finalLng], { icon, zIndexOffset: 100 });
+      marker.on('click', () => showScheduleInfo(tramId));
+      marker.addTo(map);
+      scheduleTrams[tramId] = { marker, routeId, trip, pos,
+        data: { routeId, vehicleLabel: trip.id, tripId: trip.id,
+                lat: finalLat, lng: finalLng, bearing, speed: '—' }
+      };
+    }
+  });
+
+  // Remove trams no longer active
+  Object.keys(scheduleTrams).forEach(id => {
+    if (!seen.has(id)) {
+      scheduleTrams[id].marker.remove();
+      delete scheduleTrams[id];
+    }
+  });
+
+  updateTramCount();
+}
+
+// Find a GPS vehicle matching this scheduled trip (same route, nearby position)
+function findGPSMatch(routeId, trip, schedPos) {
+  let best = null, bestDist = 0.005; // ~500m threshold
+  Object.values(markers).forEach(m => {
+    if (m.routeId !== routeId) return;
+    const d = Math.abs(m.data.lat - schedPos.lat) + Math.abs(m.data.lng - schedPos.lng);
+    if (d < bestDist) { best = m.data; bestDist = d; }
+  });
+  return best;
+}
+
+function showScheduleInfo(tramId) {
+  const t = scheduleTrams[tramId];
+  if (!t) return;
+  const def = ROUTE_DEFS[t.routeId] || { color: '#888', name: 'Unknown' };
+  const d = t.data;
+
+  selectedVehicle = tramId;
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
+  document.getElementById('vm-' + tramId)?.classList.add('selected');
+
+  // Find next stop
+  const cs = nowSecs();
+  const nextStopIdx = t.trip.stops.findIndex(s => t.trip.start + s[1] > cs);
+  let nextStopHtml = '';
+  if (nextStopIdx >= 0) {
+    const ns = t.trip.stops[nextStopIdx];
+    const stopInfo = SCHEDULE.stops[String(ns[0])];
+    const arrSecs = t.trip.start + ns[1];
+    const minsAway = Math.round((arrSecs - cs) / 60);
+    const arrTime = new Date(0);
+    arrTime.setSeconds(arrSecs % 86400);
+    const arrStr = arrTime.toTimeString().slice(0,5);
+    nextStopHtml = stopInfo
+      ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
+        stopInfo.n + '</span></div>' +
+        '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" style="font-family:var(--font-mono)">' +
+        arrStr + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')</span></div>'
+      : '';
+  }
+
+  const dirLabel = t.trip.dir === 0 ? '→ ' + def.name.split(' - ')[1] : '← ' + def.name.split(' - ')[0];
+
+  document.getElementById('info-content').innerHTML =
+    '<div style="display:flex;align-items:center;margin-bottom:12px;">' +
+    '<span class="info-route-badge" style="background:' + def.color + '">' + t.routeId + '</span>' +
+    '<span style="font-size:13px;font-weight:600;">' + def.name + '</span></div>' +
+    '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
+    nextStopHtml +
+    '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>';
+
+  document.getElementById('info-panel').classList.add('visible');
+  map.panTo([d.lat, d.lng], { animate: true });
+}
+
 // ── Load network data then draw ──────────────────────────────────────────────
 async function loadAndDrawRoutes() {
   try {
@@ -582,6 +849,8 @@ async function loadAndDrawRoutes() {
     TRAM_NETWORK = await res.json();
     drawRouteLines();
     drawStopDots();
+    // Load schedule after network is ready
+    await loadSchedule();
   } catch(e) {
     console.warn('Could not load tram_network.json:', e);
   }
@@ -589,28 +858,33 @@ async function loadAndDrawRoutes() {
 
 function drawRouteLines() {
   if (!TRAM_NETWORK) return;
-  Object.entries(TRAM_NETWORK.routes).forEach(([id, segments]) => {
+  // New network format: routes[id] = { "0": [[lat,lng,dist],...], "1": [...] }
+  Object.entries(TRAM_NETWORK.routes).forEach(([id, dirs]) => {
     const def = ROUTE_DEFS[id];
     if (!def) return;
 
-    // White casing for contrast on both dark and light maps
-    const casing = L.polyline(segments, {
+    // Combine both directions into one visual polyline
+    const allPts = [];
+    Object.values(dirs).forEach(pts => pts.forEach(p => allPts.push([p[0], p[1]])));
+
+    // Use direction 0 as primary shape (most routes go out as 0, back as 1)
+    const dir0pts = (dirs['0'] || dirs['1'] || []).map(p => [p[0], p[1]]);
+    const dir1pts = (dirs['1'] || dirs['0'] || []).map(p => [p[0], p[1]]);
+
+    const casing = L.polyline(dir0pts, {
       color: '#fff', weight: 8, opacity: 0.3,
       lineJoin: 'round', lineCap: 'round',
     });
-
-    const line = L.polyline(segments, {
+    const line = L.polyline(dir0pts, {
       color: def.color, weight: 4, opacity: 1,
       lineJoin: 'round', lineCap: 'round',
     });
     line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
 
-    // Only add to map if this route is currently active
     if (activeRoutes.has(id)) {
       casing.addTo(map);
       line.addTo(map);
     }
-
     routeLayers[id] = { line, casing, dots: [] };
   });
 }
@@ -620,18 +894,17 @@ let stopMarkers = {}; // stopId -> { marker, routes[] }
 
 function drawStopDots() {
   if (!TRAM_NETWORK) return;
-  TRAM_NETWORK.stops.forEach((stop, idx) => {
+  // New format: stops is object {stop_id: {n, lat, lng, r:[routes]}}
+  Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
     const routes = stop.r || [];
-    const marker = L.circleMarker(stop.p, {
+    const marker = L.circleMarker([stop.lat, stop.lng], {
       radius: 3, color: '#fff', weight: 1.5,
       fillColor: '#64748b', fillOpacity: 1,
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
-    // Show if at least one of this stop's routes is currently active
     if (routes.some(r => activeRoutes.has(r))) {
       marker.addTo(map);
     }
-    // Use index as key to avoid any ID collision issues
-    stopMarkers[idx] = { marker, routes };
+    stopMarkers[sid] = { marker, routes };
   });
 }
 
@@ -700,11 +973,11 @@ function toggleRoute(id) {
   document.getElementById('route-item-' + id)?.classList.toggle('dimmed', !on);
   document.getElementById('pill-' + id)?.classList.toggle('dimmed', !on);
 
-  // Show/hide tram markers
-  Object.values(markers).forEach(m => {
-    if (m.routeId === id) {
-      if (on) m.marker.addTo(map);
-      else m.marker.remove();
+  // Show/hide schedule tram markers for this route
+  Object.values(scheduleTrams).forEach(t => {
+    if (t.routeId === id) {
+      if (on) t.marker.addTo(map);
+      else t.marker.remove();
     }
   });
 
@@ -760,7 +1033,8 @@ async function fetchTrams() {
 }
 
 function processVehicles(vehicles) {
-  const counts = {};
+  // GPS data is stored for position correction but not shown as primary markers
+  // Primary display is timetable-based (scheduleTrams)
   const seen = new Set();
 
   vehicles.forEach(v => {
@@ -769,7 +1043,6 @@ function processVehicles(vehicles) {
     if (lat < -38.2 || lat > -37.5 || lng < 144.5 || lng > 145.5) return;
 
     const id = v.id || (lat + ',' + lng);
-    // Route IDs come as "aus:vic:vic-03-75:" — extract just the number
     let routeId = '?';
     if (v.routeId) {
       const m = v.routeId.match(/vic-03-(\w+):?$/);
@@ -777,59 +1050,28 @@ function processVehicles(vehicles) {
     }
     const vehicleId = v.vehicleLabel || id;
     const speed = v.speed ? (v.speed * 3.6).toFixed(0) : '0';
-    const bearing = v.bearing || 0;
     const tripId = v.tripId || '—';
-
     seen.add(id);
-    counts[routeId] = (counts[routeId] || 0) + 1;
 
-    const def = ROUTE_DEFS[routeId] || { color: '#888', name: 'Route ' + routeId };
-    const isVisible = activeRoutes.has(routeId) || !ROUTE_DEFS[routeId];
-
+    // Store GPS data for schedule matching (no map marker)
     if (markers[id]) {
-      const prevLat = markers[id].data.lat;
-      const prevLng = markers[id].data.lng;
-      const prevBearing = markers[id].lastBearing || 0;
-      const distMoved = Math.abs(lat - prevLat) + Math.abs(lng - prevLng);
-      const iconEl = markers[id].marker._icon;
-      let effectiveBearing = prevBearing;
-
-      if (distMoved > 0.00005) {
-        effectiveBearing = calcBearing(prevLat, prevLng, lat, lng);
-        markers[id].lastBearing = effectiveBearing;
-        if (iconEl) { const gEl = iconEl.querySelector('g'); if (gEl) gEl.style.display = ''; }
-      }
-
-      markers[id].marker.setLatLng([lat, lng]);
-      markers[id].data = { routeId, vehicleId, speed, bearing: effectiveBearing, tripId, lat, lng };
-      // Update arrow rotation
-      if (iconEl) {
-        const gEl = iconEl.querySelector('g');
-        if (gEl) gEl.setAttribute('transform', 'rotate(' + effectiveBearing + ')');
-      }
+      markers[id].data = { routeId, vehicleId, speed, bearing: 0, tripId, lat, lng };
     } else {
-      const initBearing = markers[id] ? (markers[id].lastBearing || 0) : 0;
-      const icon = L.divIcon({
-        className: 'tram-icon-outer',
-        html: makeTramSVG(routeId, def.color, initBearing, id),
-        iconSize: [36, 36],
-        iconAnchor: [18, 18],
-      });
-      const marker = L.marker([lat, lng], { icon, zIndexOffset: 100 });
-      marker.on('click', () => showInfo(id));
-      if (isVisible) marker.addTo(map);
-      markers[id] = { marker, routeId, lastBearing: initBearing, data: { routeId, vehicleId, speed, bearing: initBearing, tripId, lat, lng } };
+      markers[id] = { routeId, lastBearing: 0,
+        data: { routeId, vehicleId, speed, bearing: 0, tripId, lat, lng } };
     }
-
-    const el = document.getElementById('vm-' + id);
-    if (el) el.style.background = def.color;
   });
 
-  // Remove stale markers
+  // Remove stale GPS records
   Object.keys(markers).forEach(id => {
-    if (!seen.has(id)) { markers[id].marker.remove(); delete markers[id]; }
+    if (!seen.has(id)) delete markers[id];
   });
 
+  // Update route counts from schedule trams
+  const counts = {};
+  Object.values(scheduleTrams).forEach(t => {
+    counts[t.routeId] = (counts[t.routeId] || 0) + 1;
+  });
   Object.keys(ROUTE_DEFS).forEach(id => {
     const el = document.getElementById('rc-' + id);
     if (el) el.textContent = counts[id] || 0;
@@ -839,9 +1081,9 @@ function processVehicles(vehicles) {
 }
 
 function updateTramCount() {
-  const visible = Object.values(markers).filter(m => activeRoutes.has(m.routeId)).length;
-  document.getElementById('tram-count-badge').textContent = `${visible} trams`;
-  document.getElementById('mobile-tram-count').textContent = `${visible} trams`;
+  const visible = Object.values(scheduleTrams).filter(t => activeRoutes.has(t.routeId)).length;
+  document.getElementById('tram-count-badge').textContent = visible + ' trams';
+  document.getElementById('mobile-tram-count').textContent = visible + ' trams';
 }
 
 function showInfo(vehicleId) {
