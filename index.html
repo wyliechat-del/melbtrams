@@ -971,24 +971,26 @@ function showScheduleInfo(tramId) {
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
-    const stopRaw = SCHEDULE.stops[String(ns[0])];
-    const stopInfo = stopRaw ? (Array.isArray(stopRaw)
-      ? { n: 'Stop ' + ns[0], lat: stopRaw[0], lng: stopRaw[1] }
-      : stopRaw) : null;
+    // Use TRAM_NETWORK.stops for full stop names
+    const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
+    const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
     const arrSecs = t.trip.start + ns[1];
     const minsAway = Math.round((arrSecs - cs) / 60);
     const arrTime = new Date(0);
     arrTime.setSeconds(arrSecs % 86400);
     const arrStr = arrTime.toTimeString().slice(0,5);
-    nextStopHtml = stopInfo
+    nextStopHtml = stopName
       ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
-        stopInfo.n + '</span></div>' +
+        stopName.n + '</span></div>' +
         '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" style="font-family:var(--font-mono)">' +
         arrStr + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')</span></div>'
       : '';
   }
 
-  const dirLabel = t.trip.dir === 0 ? '→ ' + def.name.split(' - ')[1] : '← ' + def.name.split(' - ')[0];
+  const nameParts = def.name.split(' – ');  // split on em dash
+  const dirLabel = t.trip.dir === 0
+    ? '→ ' + (nameParts[1] || def.name)
+    : '← ' + (nameParts[0] || def.name);
 
   document.getElementById('info-content').innerHTML =
     '<div style="display:flex;align-items:center;margin-bottom:12px;">' +
