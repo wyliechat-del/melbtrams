@@ -498,13 +498,17 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   if (segIdx === -1 && currentSecs < absTimes[0]) {
     const s = stops_dict[String(tripStops[0][0])];
     if (!s) return null;
-    return { lat: s.lat, lng: s.lng, bearing: 0, atStop: true };
+    const slat = Array.isArray(s) ? s[0] : s.lat;
+    const slng = Array.isArray(s) ? s[1] : s.lng;
+    return { lat: slat, lng: slng, bearing: 0, atStop: true };
   }
   // After last stop - show at last stop
   if (segIdx === -1) {
     const s = stops_dict[String(tripStops[tripStops.length-1][0])];
     if (!s) return null;
-    return { lat: s.lat, lng: s.lng, bearing: 0, atStop: true };
+    const slat = Array.isArray(s) ? s[0] : s.lat;
+    const slng = Array.isArray(s) ? s[1] : s.lng;
+    return { lat: slat, lng: slng, bearing: 0, atStop: true };
   }
 
   // Interpolate between stops[segIdx] and stops[segIdx+1]
@@ -515,9 +519,15 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   const s1 = stops_dict[String(tripStops[segIdx+1][0])];
   if (!s0 || !s1) return null;
 
-  const lat = s0.lat + (s1.lat - s0.lat) * frac;
-  const lng = s0.lng + (s1.lng - s0.lng) * frac;
-  const bearing = calcBearing(s0.lat, s0.lng, s1.lat, s1.lng);
+  // stops_dict values are [lat, lng] arrays
+  const s0lat = Array.isArray(s0) ? s0[0] : s0.lat;
+  const s0lng = Array.isArray(s0) ? s0[1] : s0.lng;
+  const s1lat = Array.isArray(s1) ? s1[0] : s1.lat;
+  const s1lng = Array.isArray(s1) ? s1[1] : s1.lng;
+
+  const lat = s0lat + (s1lat - s0lat) * frac;
+  const lng = s0lng + (s1lng - s0lng) * frac;
+  const bearing = calcBearing(s0lat, s0lng, s1lat, s1lng);
 
   return { lat, lng, bearing, atStop: false };
 }
@@ -718,15 +728,12 @@ function startScheduleAnimation() {
 }
 
 function tickSchedule() {
-  if (!SCHEDULE || !TRAM_NETWORK) {
-    console.log('tickSchedule: waiting - SCHEDULE:', !!SCHEDULE, 'TRAM_NETWORK:', !!TRAM_NETWORK);
-    return;
-  }
+  if (!SCHEDULE || !TRAM_NETWORK) return;
 
   // Handle midnight rollover: if seconds wrap, reload schedule
   const cs = nowSecs();
   const active = getActiveTrips(cs);
-  if (active.length === 0) console.log('tickSchedule: no active trips at', cs, 'secs (', Math.floor(cs/3600) + ':' + String(Math.floor((cs%3600)/60)).padStart(2,'0'), ')');
+
 
   const seen = new Set();
 
@@ -818,7 +825,10 @@ function showScheduleInfo(tramId) {
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
-    const stopInfo = SCHEDULE.stops[String(ns[0])];
+    const stopRaw = SCHEDULE.stops[String(ns[0])];
+    const stopInfo = stopRaw ? (Array.isArray(stopRaw)
+      ? { n: 'Stop ' + ns[0], lat: stopRaw[0], lng: stopRaw[1] }
+      : stopRaw) : null;
     const arrSecs = t.trip.start + ns[1];
     const minsAway = Math.round((arrSecs - cs) / 60);
     const arrTime = new Date(0);
