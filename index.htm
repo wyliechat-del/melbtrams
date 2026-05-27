@@ -453,6 +453,10 @@ let SCHEDULE_DAY = null;  // 'weekday' | 'saturday' | 'sunday'
 let scheduleTrams = {};
 let scheduleTimer = null;
 
+// Trip delays from GTFS-RT Trip Updates feed: tripId → delaySecs
+// Positive = running late, negative = running early
+let tripDelays = {};  // populated from Worker response
+
 function getTodayType() {
   // Returns day type accounting for public holidays → Saturday
   const d = new Date();
@@ -471,6 +475,7 @@ function nowSecs() {
   const d = new Date();
   return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
 }
+
 
 // Find position on a shape geometry at a given distance along the path
 function posOnShape(shape, dist) {
@@ -498,7 +503,12 @@ function posOnShape(shape, dist) {
 
 // Given a trip and current time, return interpolated {lat, lng, bearing} or null
 // Uses shape geometry for smooth path-following
+// Applies GPS-derived delay offset so tram shows where it actually is
 function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
+  // Apply official delay from GTFS-RT Trip Updates feed
+  // tripDelays keys are GTFS trip_ids matching our schedule trip ids
+  const delaySecs = tripDelays[trip.id] || 0;
+  currentSecs = currentSecs - delaySecs;  // shift time back by delay amount
   const tripStart = trip.start;
   const tripStops = trip.stops; // [stop_id, delta_secs, shape_dist]
 
@@ -848,28 +858,35 @@ function showScheduleInfo(tramId) {
 
   // Find next stop
   const cs = nowSecs();
-  const nextStopIdx = t.trip.stops.findIndex(s => t.trip.start + s[1] > cs);
+  // Apply same delay offset used for positioning so next stop matches displayed location
+  const delaySecs = tripDelays[t.trip.id] || 0;
+  const adjustedCs = cs - delaySecs;
+  const nextStopIdx = t.trip.stops.findIndex(s => t.trip.start + s[1] > adjustedCs);
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
-    const stopRaw = SCHEDULE.stops[String(ns[0])];
-    const stopInfo = stopRaw ? (Array.isArray(stopRaw)
-      ? { n: 'Stop ' + ns[0], lat: stopRaw[0], lng: stopRaw[1] }
-      : stopRaw) : null;
+    // Use TRAM_NETWORK.stops for full stop names
+    const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
+    const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
     const arrSecs = t.trip.start + ns[1];
-    const minsAway = Math.round((arrSecs - cs) / 60);
-    const arrTime = new Date(0);
-    arrTime.setSeconds(arrSecs % 86400);
-    const arrStr = arrTime.toTimeString().slice(0,5);
-    nextStopHtml = stopInfo
+    const minsAway = Math.round((arrSecs - adjustedCs) / 60);
+    // Convert schedule seconds to HH:MM — schedule is in local Melbourne time
+    const arrSecsLocal = arrSecs % 86400;
+    const arrHH = Math.floor(arrSecsLocal / 3600) % 24;
+    const arrMM = Math.floor((arrSecsLocal % 3600) / 60);
+    const arrStr = String(arrHH).padStart(2,'0') + ':' + String(arrMM).padStart(2,'0');
+    nextStopHtml = stopName
       ? '<div class="info-row"><span class="info-label">Next stop</span><span class="info-value" style="font-size:11px">' +
-        stopInfo.n + '</span></div>' +
+        stopName.n + '</span></div>' +
         '<div class="info-row"><span class="info-label">Arrives</span><span class="info-value" style="font-family:var(--font-mono)">' +
         arrStr + ' (' + (minsAway <= 0 ? 'now' : minsAway + ' min') + ')</span></div>'
       : '';
   }
 
-  const dirLabel = t.trip.dir === 0 ? '→ ' + def.name.split(' - ')[1] : '← ' + def.name.split(' - ')[0];
+  const nameParts = def.name.split(' – ');  // split on em dash
+  const dirLabel = t.trip.dir === 1
+    ? '→ ' + (nameParts[1] || def.name)
+    : '← ' + (nameParts[0] || def.name);
 
   document.getElementById('info-content').innerHTML =
     '<div style="display:flex;align-items:center;margin-bottom:12px;">' +
@@ -877,7 +894,15 @@ function showScheduleInfo(tramId) {
     '<span style="font-size:13px;font-weight:600;">' + def.name + '</span></div>' +
     '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
     nextStopHtml +
-    '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>';
+    '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>' +
+    (function() {
+      const ds = tripDelays[t.trip.id];
+      if (ds === undefined) return '';
+      const mins = Math.round(ds / 60);
+      const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
+      const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
+      return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
+    })();
 
   document.getElementById('info-panel').classList.add('visible');
   map.panTo([d.lat, d.lng], { animate: true });
@@ -1053,6 +1078,8 @@ async function fetchTrams() {
     if (json.error) throw new Error(json.error);
     const vehicles = json.vehicles || [];
 
+    // Store trip delays from Trip Updates feed
+    if (json.delays) tripDelays = json.delays;
     processVehicles(vehicles);
     setStatus('live', Object.values(scheduleTrams).length + ' trams');
     document.getElementById('error-banner').style.display = 'none';
@@ -1074,8 +1101,7 @@ async function fetchTrams() {
 }
 
 function processVehicles(vehicles) {
-  // GPS data no longer used for positioning - pure timetable only
-  // Just update the vehicle count display
+  // Update the vehicle count display
   const counts = {};
   Object.values(scheduleTrams).forEach(t => {
     counts[t.routeId] = (counts[t.routeId] || 0) + 1;
