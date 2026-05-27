@@ -361,31 +361,32 @@ const WORKER_URL = 'https://weathered-limit-7615.wyliechat.workers.dev/';
 
 // ── Route definitions ───────────────────────────────────────────────────────
 const ROUTE_DEFS = {
-  '1':   { name: 'East Coburg – South Melbourne Beach', color: '#E53E3E', group: 'Swanston' },
-  '3':   { name: 'Melbourne Uni – East Malvern (Wkdays)', color: '#E53E3E', group: 'Swanston' },
-  '3a':  { name: 'Melbourne Uni – East Malvern (Wknds)', color: '#E53E3E', group: 'Swanston' },
-  '5':   { name: 'Melbourne Uni – Malvern', color: '#E53E3E', group: 'Swanston' },
-  '6':   { name: 'Moreland – Glen Iris', color: '#38A169', group: 'Swanston' },
-  '16':  { name: 'Melbourne Uni – Kew', color: '#3182CE', group: 'Swanston' },
-  '64':  { name: 'Melbourne Uni – East Brighton', color: '#00B5D8', group: 'Swanston' },
-  '67':  { name: 'Melbourne Uni – Carnegie', color: '#38A169', group: 'Swanston' },
-  '72':  { name: 'Melbourne Uni – Camberwell', color: '#3182CE', group: 'Swanston' },
-  '19':  { name: 'North Coburg – Flinders St', color: '#E53E3E', group: 'Elizabeth' },
-  '57':  { name: 'West Maribyrnong – Flinders St', color: '#E53E3E', group: 'Elizabeth' },
-  '58':  { name: 'West Coburg – Toorak', color: '#805AD5', group: 'Elizabeth' },
-  '59':  { name: 'Airport West – Flinders St', color: '#E53E3E', group: 'Elizabeth' },
-  '11':  { name: 'West Preston – Victoria Harbour', color: '#805AD5', group: 'Collins' },
-  '12':  { name: 'St Kilda / Fitzroy St – Victoria Gardens', color: '#D53F8C', group: 'Collins' },
-  '48':  { name: 'North Balwyn – Victoria Harbour', color: '#805AD5', group: 'Collins' },
-  '109': { name: 'Box Hill – Port Melbourne', color: '#744210', group: 'Collins' },
-  '86':  { name: 'Bundoora RMIT – Waterfront City', color: '#2F855A', group: 'Bourke' },
-  '96':  { name: 'East Brunswick – St Kilda Beach', color: '#D53F8C', group: 'Bourke' },
-  '30':  { name: "St Vincent's Plaza – Etihad Stadium", color: '#DD6B20', group: 'La Trobe' },
-  '35':  { name: 'City Circle', color: '#DD6B20', group: 'La Trobe' },
-  '70':  { name: 'Wattle Park – Waterfront City', color: '#D69E2E', group: 'Flinders' },
-  '75':  { name: 'Vermont South – Etihad Stadium', color: '#D69E2E', group: 'Flinders' },
-  '78':  { name: 'North Richmond – Balaclava', color: '#F6AD55', group: 'Suburban' },
-  '82':  { name: 'Moonee Ponds – Footscray', color: '#F6AD55', group: 'Suburban' },
+  // Official PTV/Yarra Trams route colours
+  '1':   { name: 'East Coburg – South Melbourne Beach', color: '#7DC242', group: 'Swanston' },   // light green
+  '3':   { name: 'Melbourne Uni – East Malvern (Wkdays)', color: '#6AB4E8', group: 'Swanston' }, // light blue
+  '3a':  { name: 'Melbourne Uni – East Malvern (Wknds)', color: '#6AB4E8', group: 'Swanston' },  // light blue
+  '5':   { name: 'Melbourne Uni – Malvern', color: '#D7282F', group: 'Swanston' },               // red
+  '6':   { name: 'Moreland – Glen Iris', color: '#007B5E', group: 'Swanston' },                  // dark green
+  '16':  { name: 'Melbourne Uni – Kew', color: '#E8D44D', group: 'Swanston' },                   // light yellow
+  '64':  { name: 'Melbourne Uni – East Brighton', color: '#009DDC', group: 'Swanston' },         // sky blue
+  '67':  { name: 'Melbourne Uni – Carnegie', color: '#6D4C9F', group: 'Swanston' },              // purple
+  '72':  { name: 'Melbourne Uni – Camberwell', color: '#009B77', group: 'Swanston' },            // teal
+  '19':  { name: 'North Coburg – Flinders St', color: '#9E4E97', group: 'Elizabeth' },           // light purple
+  '57':  { name: 'West Maribyrnong – Flinders St', color: '#D7282F', group: 'Elizabeth' },       // red
+  '58':  { name: 'West Coburg – Toorak', color: '#7B3F96', group: 'Elizabeth' },                 // dark purple
+  '59':  { name: 'Airport West – Flinders St', color: '#007B5E', group: 'Elizabeth' },           // dark green
+  '11':  { name: 'West Preston – Victoria Harbour', color: '#7B3F96', group: 'Collins' },        // dark purple
+  '12':  { name: 'St Kilda / Fitzroy St – Victoria Gardens', color: '#E4004B', group: 'Collins' }, // magenta
+  '48':  { name: 'North Balwyn – Victoria Harbour', color: '#009DDC', group: 'Collins' },        // sky blue
+  '109': { name: 'Box Hill – Port Melbourne', color: '#E07B39', group: 'Collins' },              // orange
+  '86':  { name: 'Bundoora RMIT – Waterfront City', color: '#7DC242', group: 'Bourke' },         // light green
+  '96':  { name: 'East Brunswick – St Kilda Beach', color: '#E4004B', group: 'Bourke' },         // magenta
+  '30':  { name: "St Vincent's Plaza – Etihad Stadium", color: '#E07B39', group: 'La Trobe' },  // orange
+  '35':  { name: 'City Circle', color: '#D7282F', group: 'La Trobe' },                               // red
+  '70':  { name: 'Wattle Park – Waterfront City', color: '#F5A800', group: 'Flinders' },         // amber
+  '75':  { name: 'Vermont South – Etihad Stadium', color: '#6AB4E8', group: 'Flinders' },       // light blue
+  '78':  { name: 'North Richmond – Balaclava', color: '#E07B39', group: 'Suburban' },            // orange
+  '82':  { name: 'Moonee Ponds – Footscray', color: '#F5A800', group: 'Suburban' },              // amber
 };
 
 const GROUPS = ['Swanston', 'Elizabeth', 'Collins', 'Bourke', 'La Trobe', 'Flinders', 'Suburban'];
