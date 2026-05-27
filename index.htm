@@ -580,18 +580,24 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
 }
 
 // Find active trips right now for all routes
+// Deduplicates by (route, direction, start_time) since schedule contains
+// multiple service_id variants (Mon/Tue/Wed etc) for the same physical service
 function getActiveTrips(currentSecs) {
   if (!SCHEDULE) return [];
   const active = [];
-  const stops_dict = SCHEDULE.stops;
 
   Object.entries(SCHEDULE.trips).forEach(([routeId, tripList]) => {
+    const seen = new Set(); // deduplicate within this route
     tripList.forEach((trip, idx) => {
       const tripStart = trip.start;
       const tripEnd   = tripStart + trip.stops[trip.stops.length-1][1];
-      // Active window: 2min before first stop to 2min after last
-      if (currentSecs >= tripStart - 120 && currentSecs <= tripEnd + 120) {
-        active.push({ routeId, trip, idx });
+      if (currentSecs >= tripStart && currentSecs <= tripEnd + 60) {
+        // Key: direction + start_time uniquely identifies a physical service
+        const key = trip.dir + '_' + trip.start;
+        if (!seen.has(key)) {
+          seen.add(key);
+          active.push({ routeId, trip, idx });
+        }
       }
     });
   });
@@ -1081,7 +1087,7 @@ async function fetchTrams() {
     // Store trip delays from Trip Updates feed
     if (json.delays) tripDelays = json.delays;
     processVehicles(vehicles);
-    setStatus('live', Object.values(scheduleTrams).length + ' trams');
+    setStatus('live', vehicles.length + ' vehicles');
     document.getElementById('error-banner').style.display = 'none';
 
     const now = new Date();
