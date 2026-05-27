@@ -935,29 +935,29 @@ function drawRouteLines() {
     const def = ROUTE_DEFS[id];
     if (!def) return;
 
-    // Combine both directions into one visual polyline
-    const allPts = [];
-    Object.values(dirs).forEach(pts => pts.forEach(p => allPts.push([p[0], p[1]])));
+    const active = activeRoutes.has(id);
+    const lines = [], casings = [];
 
-    // Use direction 0 as primary shape (most routes go out as 0, back as 1)
-    const dir0pts = (dirs['0'] || dirs['1'] || []).map(p => [p[0], p[1]]);
-    const dir1pts = (dirs['1'] || dirs['0'] || []).map(p => [p[0], p[1]]);
+    // Draw both directions as separate polylines
+    Object.entries(dirs).forEach(([dir, pts]) => {
+      const latLngs = pts.map(p => [p[0], p[1]]);
+      if (latLngs.length === 0) return;
 
-    const casing = L.polyline(dir0pts, {
-      color: '#fff', weight: 8, opacity: 0.3,
-      lineJoin: 'round', lineCap: 'round',
+      const casing = L.polyline(latLngs, {
+        color: '#fff', weight: 8, opacity: 0.3,
+        lineJoin: 'round', lineCap: 'round',
+      });
+      const line = L.polyline(latLngs, {
+        color: def.color, weight: 4, opacity: 1,
+        lineJoin: 'round', lineCap: 'round',
+      });
+      line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
+
+      if (active) { casing.addTo(map); line.addTo(map); }
+      lines.push(line); casings.push(casing);
     });
-    const line = L.polyline(dir0pts, {
-      color: def.color, weight: 4, opacity: 1,
-      lineJoin: 'round', lineCap: 'round',
-    });
-    line.bindTooltip('Route ' + id + ' — ' + def.name, { sticky: true });
 
-    if (activeRoutes.has(id)) {
-      casing.addTo(map);
-      line.addTo(map);
-    }
-    routeLayers[id] = { line, casing, dots: [] };
+    routeLayers[id] = { lines, casings, dots: [] };
   });
 }
 
@@ -1053,14 +1053,16 @@ function toggleRoute(id) {
     }
   });
 
-  // Show/hide route line + stop dots
+  // Show/hide route lines + stop dots
   if (routeLayers[id]) {
-    const { line, casing, dots } = routeLayers[id];
+    const { lines, casings, dots } = routeLayers[id];
     if (on) {
-      casing.addTo(map); line.addTo(map);
+      casings.forEach(c => c.addTo(map));
+      lines.forEach(l => l.addTo(map));
       dots.forEach(d => d.addTo(map));
     } else {
-      map.removeLayer(casing); map.removeLayer(line);
+      casings.forEach(c => map.removeLayer(c));
+      lines.forEach(l => map.removeLayer(l));
       dots.forEach(d => map.removeLayer(d));
     }
   }
