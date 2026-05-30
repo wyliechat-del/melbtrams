@@ -558,14 +558,35 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   }
 
   // Interpolate shape distance between the two stops
+  // Tram dwells at the departure stop for DWELL_SECS, then travels faster to
+  // cover the full distance in the remaining time — more natural than constant speed
+  const DWELL_SECS = 20;
   const t0 = absTimes[segIdx], t1 = absTimes[segIdx+1];
-  const frac = t1 > t0 ? (currentSecs - t0) / (t1 - t0) : 0;
+  const segDuration = t1 - t0;
+  const elapsed = currentSecs - t0;
   const d0 = tripStops[segIdx][2], d1 = tripStops[segIdx+1][2];
+
+  let frac, dwellingAtStop;
+  if (segDuration > DWELL_SECS + 5 && elapsed <= DWELL_SECS) {
+    // Still dwelling at the departure stop
+    frac = 0;
+    dwellingAtStop = true;
+  } else if (segDuration > DWELL_SECS + 5) {
+    // Travelling — compress journey into (segDuration - DWELL_SECS) seconds
+    const travelTime = segDuration - DWELL_SECS;
+    frac = Math.min(1, (elapsed - DWELL_SECS) / travelTime);
+    dwellingAtStop = false;
+  } else {
+    // Short segment (< 25s) — normal linear interpolation, no room for dwell
+    frac = segDuration > 0 ? Math.min(1, elapsed / segDuration) : 0;
+    dwellingAtStop = false;
+  }
+
   const dist = d0 + (d1 - d0) * frac;
 
   if (shape) {
     const p = posOnShape(shape, dist);
-    return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: false };
+    return { lat: p.lat, lng: p.lng, bearing: p.bearing, atStop: dwellingAtStop };
   }
 
   // Fallback: straight line between stops if no shape
@@ -576,7 +597,7 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
     lat: s0[0] + (s1[0] - s0[0]) * frac,
     lng: s0[1] + (s1[1] - s0[1]) * frac,
     bearing: calcBearing(s0[0], s0[1], s1[0], s1[1]),
-    atStop: false
+    atStop: dwellingAtStop
   };
 }
 
@@ -1180,7 +1201,6 @@ function updateClock() {
 window.addEventListener('DOMContentLoaded', () => {
   initMap();
   buildSidebar();
-  loadAndDrawRoutes();   // loads network + schedule, starts animation
   fetchTrams();
   setInterval(updateClock, 1000);
   setInterval(fetchTrams, 10000);
