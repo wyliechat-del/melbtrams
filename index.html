@@ -1063,8 +1063,8 @@ function drawStopDots() {
   Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
     const routes = stop.r || [];
     const marker = L.circleMarker([stop.lat, stop.lng], {
-      radius: 4, color: '#fff', weight: 1.5,
-      fillColor: '#64748b', fillOpacity: 1,
+      radius: 8, color: '#fff', weight: 1.5,
+      fillColor: '#64748b', fillOpacity: 0.9,
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
     marker.on('click', () => showStopInfo(sid));
     if (routes.some(r => activeRoutes.has(r))) {
@@ -1302,40 +1302,39 @@ function showStopInfo(sid) {
   selectedVehicle = null;
 
   const cs = nowSecs();
-  const baseRoutes = new Set(stop.r || []);
+  const tapLat = stop.lat, tapLng = stop.lng;
+  const baseRoutes = stop.r || [];
 
-  // Melbourne stops are direction-specific (each platform is its own stop id).
-  // To show BOTH directions, also include nearby stops (~80m) that share a route
-  // — that captures the opposite-side platform across the road.
-  const NEARBY_M = 80;
-  const mergedStopIds = [String(sid)];
-  Object.entries(TRAM_NETWORK.stops).forEach(([id, s]) => {
-    if (id === String(sid)) return;
-    if (!(s.r || []).some(r => baseRoutes.has(r))) return;
-    if (metresBetween(stop.lat, stop.lng, s.lat, s.lng) <= NEARBY_M) mergedStopIds.push(id);
-  });
-
+  // Melbourne stops are direction-specific (each platform is its own id, often on
+  // opposite sides of the road and numbered separately). Rather than rely on
+  // stop-id pairing, scan every trip of the routes serving this stop and find
+  // where each trip passes CLOSEST to the tapped point. Both directions live in
+  // SCHEDULE.trips[routeId], so this reliably surfaces both ways.
+  const RADIUS_M = 150;
   const seen = new Set();
   const arrivals = []; // { routeId, dir, predArr, delay }
 
-  mergedStopIds.forEach(stid => {
-    const s = TRAM_NETWORK.stops[stid];
-    if (!s) return;
-    (s.r || []).forEach(routeId => {
-      if (!activeRoutes.has(routeId)) return;     // only routes the user has on
-      const trips = SCHEDULE.trips[routeId] || [];
-      trips.forEach(trip => {
-        const st = trip.stops.find(x => String(x[0]) === String(stid));
-        if (!st) return;
-        const schedArr = trip.start + st[1];
-        const delay = tripDelays[trip.id] || 0;
-        const predArr = schedArr + delay;
-        if (predArr < cs - 90 || predArr > cs + 3600) return; // next ~hour only
-        const key = routeId + '_' + trip.dir + '_' + trip.start;
-        if (seen.has(key)) return;
-        seen.add(key);
-        arrivals.push({ routeId, dir: trip.dir, predArr, delay });
-      });
+  baseRoutes.forEach(routeId => {
+    if (!activeRoutes.has(routeId)) return;     // only routes the user has on
+    const trips = SCHEDULE.trips[routeId] || [];
+    trips.forEach(trip => {
+      // Find the stop in this trip nearest the tapped location
+      let best = null, bestD = Infinity;
+      for (const st of trip.stops) {
+        const sc = SCHEDULE.stops[String(st[0])];
+        if (!sc) continue;
+        const d = metresBetween(tapLat, tapLng, sc[0], sc[1]);
+        if (d < bestD) { bestD = d; best = st; }
+      }
+      if (!best || bestD > RADIUS_M) return;
+      const schedArr = trip.start + best[1];
+      const delay = tripDelays[trip.id] || 0;
+      const predArr = schedArr + delay;
+      if (predArr < cs - 90 || predArr > cs + 3600) return; // next ~hour only
+      const key = routeId + '_' + trip.dir + '_' + trip.start;
+      if (seen.has(key)) return;
+      seen.add(key);
+      arrivals.push({ routeId, dir: trip.dir, predArr, delay });
     });
   });
 
