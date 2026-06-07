@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Melbourne Trams</title>
+<title>WheresMyTram</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -278,6 +278,46 @@
     transition: background 0.15s;
   }
   .all-btn:hover { background: rgba(255,255,255,0.1); }
+
+  /* ── Compass / orient-north button ── */
+  #compass-btn {
+    position: absolute; bottom: 72px; right: 12px; z-index: 1000;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4); transition: background 0.15s;
+  }
+  #compass-btn:hover { background: var(--surface2); }
+  #compass-rose {
+    font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+    line-height: 1; display: flex; flex-direction: column; align-items: center;
+    transition: transform 0.25s ease;
+  }
+  #compass-rose .tick { color: var(--red); font-size: 8px; margin-bottom: -2px; }
+  @media (max-width: 640px) { #compass-btn { bottom: 188px; } }
+
+  /* ── Service alerts ── */
+  #alerts-btn {
+    background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.45);
+    color: var(--amber); padding: 3px 10px; border-radius: 20px;
+    font-family: var(--font-mono); font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  #alerts-btn:hover { background: rgba(251,191,36,0.28); }
+  #alerts-panel {
+    position: fixed; top: 60px; right: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px; font-size: 13px;
+    z-index: 2000; width: 320px; max-width: calc(100vw - 24px);
+    max-height: 70vh; overflow-y: auto; display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #alerts-panel.visible { display: block; }
+  .info-close-x {
+    position: absolute; top: 8px; right: 12px; background: none; border: none;
+    color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1;
+  }
+  .route-item.has-alert .route-name::after { content: ' ⚠'; color: var(--amber); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -288,13 +328,14 @@
       <div class="logo-icon">T</div>
       <div>
         <div style="display:flex;align-items:baseline;gap:8px;">
-          <h1>Melbourne Trams</h1>
+          <h1>WheresMyTram</h1>
           <span class="subtitle">LIVE</span>
         </div>
       </div>
     </div>
     <div id="status-group">
-      <div id="live-badge"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
+      <div id="live-badge" title="Total trams reporting live across the whole Melbourne network — not just the routes you have switched on"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
+      <button id="alerts-btn" style="display:none" title="Service disruptions" onclick="toggleAlertsPanel()">⚠ <span id="alerts-count">0</span></button>
       <div id="tram-count-badge">— trams</div>
       <div id="clock">--:--:--</div>
       <button id="refresh-btn" onclick="fetchTrams()">↻ Refresh</button>
@@ -329,6 +370,7 @@
     </div>
     <div id="map"></div>
     <button id="locate-btn" title="Show my location" onclick="locateMe()">◎</button>
+    <button id="compass-btn" title="Orient map north" onclick="orientNorth()"><span id="compass-rose"><span class="tick">▲</span>N</span></button>
   </div>
 
   <div id="bottombar">
@@ -353,7 +395,10 @@
   <div id="info-content"></div>
 </div>
 
+<div id="alerts-panel"></div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 // ── Your Cloudflare Worker URL (fill this in after deploying worker.js) ──
@@ -441,6 +486,9 @@ function setMapStyle(style) {
   tileLabels.bringToFront();
 }
 let map, markers = {}, routeLayers = {}, activeRoutes = loadSavedRoutes();
+let mapBearing = 0;          // current map rotation (deg), 0 = north up
+let serviceAlerts = [];      // from Worker json.alerts (when available)
+let selectedStop = null;
 let selectedVehicle = null, refreshInterval = null;
 
 // Route geodata loaded from tram_network.json
@@ -679,6 +727,10 @@ function initMap() {
     zoom: 13,
     zoomControl: true,
     attributionControl: true,
+    rotate: true,          // leaflet-rotate: allow map bearing
+    touchRotate: true,     // two-finger rotate on touch devices
+    rotateControl: false,  // we use our own compass button
+    bearing: 0,
   });
 
   // Street mode: dark CartoDB
@@ -699,6 +751,14 @@ function initMap() {
     { color: '#4ade80', weight: 1.5, fillColor: '#4ade80', fillOpacity: 0.06, dashArray: '4 4' }
   ).addTo(map);
   ftz.bindTooltip('Free Tram Zone', { permanent: false, direction: 'center', className: 'ftz-tooltip' });
+
+  // Compass / orient-north support (only if leaflet-rotate loaded)
+  if (typeof map.setBearing === 'function') {
+    map.on('rotate rotateend', updateCompass);
+  } else {
+    const cb = document.getElementById('compass-btn');
+    if (cb) cb.style.display = 'none';
+  }
 
   loadAndDrawRoutes();
 }
@@ -807,6 +867,8 @@ function tickSchedule() {
 
   // Handle midnight rollover: if seconds wrap, reload schedule
   const cs = nowSecs();
+  // Keep compass + arrow compensation in sync with any map rotation
+  if (typeof map.getBearing === 'function') { mapBearing = map.getBearing() || 0; }
   const active = getActiveTrips(cs);
 
 
@@ -838,7 +900,7 @@ function tickSchedule() {
       if (iconEl) {
         const gEl = iconEl.querySelector('g');
         if (gEl) {
-          gEl.setAttribute('transform', 'rotate(' + bearing + ')');
+          gEl.setAttribute('transform', 'rotate(' + (bearing - mapBearing) + ')');
           gEl.style.display = bearing ? '' : 'none';
         }
       }
@@ -992,9 +1054,10 @@ function drawStopDots() {
   Object.entries(TRAM_NETWORK.stops).forEach(([sid, stop]) => {
     const routes = stop.r || [];
     const marker = L.circleMarker([stop.lat, stop.lng], {
-      radius: 3, color: '#fff', weight: 1.5,
+      radius: 4, color: '#fff', weight: 1.5,
       fillColor: '#64748b', fillOpacity: 1,
     }).bindTooltip(stop.n, { sticky: true, direction: 'top' });
+    marker.on('click', () => showStopInfo(sid));
     if (routes.some(r => activeRoutes.has(r))) {
       marker.addTo(map);
     }
@@ -1110,8 +1173,11 @@ async function fetchTrams() {
 
     // Store trip delays from Trip Updates feed
     if (json.delays) tripDelays = json.delays;
+    // Store service alerts (present once the Worker exposes them)
+    serviceAlerts = json.alerts || [];
+    renderAlerts();
     processVehicles(vehicles);
-    setStatus('live', vehicles.length + ' vehicles');
+    setStatus('live', vehicles.length + ' on network');
     document.getElementById('error-banner').style.display = 'none';
 
     const now = new Date();
@@ -1178,6 +1244,7 @@ function closeInfo() {
   document.getElementById('info-panel').classList.remove('visible');
   document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
   selectedVehicle = null;
+  selectedStop = null;
 }
 
 function setStatus(state, text) {
@@ -1195,6 +1262,137 @@ function updateClock() {
   const now = new Date();
   document.getElementById('clock').textContent =
     now.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+// ── Orient-north compass ─────────────────────────────────────
+function orientNorth() {
+  if (typeof map.setBearing === 'function') map.setBearing(0);
+}
+function updateCompass() {
+  if (typeof map.getBearing !== 'function') return;
+  mapBearing = map.getBearing() || 0;
+  const rose = document.getElementById('compass-rose');
+  // rotate the rose so the N/arrow keeps pointing at true north on the rotated map
+  if (rose) rose.style.transform = 'rotate(' + (-mapBearing) + 'deg)';
+}
+
+// ── Tap-a-stop: next tram in each direction ────────────────────────
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function showStopInfo(sid) {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+  const stop = TRAM_NETWORK.stops[String(sid)];
+  if (!stop) return;
+  selectedStop = sid;
+  // Deselect any tram
+  document.querySelectorAll('.tram-icon-outer svg').forEach(el => el.classList.remove('selected'));
+  selectedVehicle = null;
+
+  const cs = nowSecs();
+  const stopRoutes = stop.r || [];
+  const seen = new Set();
+  const arrivals = []; // { routeId, dir, predArr, delay }
+
+  stopRoutes.forEach(routeId => {
+    if (!activeRoutes.has(routeId)) return;     // only routes the user has on
+    const trips = SCHEDULE.trips[routeId] || [];
+    trips.forEach(trip => {
+      const st = trip.stops.find(s => String(s[0]) === String(sid));
+      if (!st) return;
+      const schedArr = trip.start + st[1];
+      const delay = tripDelays[trip.id] || 0;
+      const predArr = schedArr + delay;
+      if (predArr < cs - 90 || predArr > cs + 3600) return; // next ~hour only
+      const key = routeId + '_' + trip.dir + '_' + trip.start;
+      if (seen.has(key)) return;
+      seen.add(key);
+      arrivals.push({ routeId, dir: trip.dir, predArr, delay });
+    });
+  });
+
+  const byDir = {};
+  arrivals.forEach(a => { (byDir[a.dir] = byDir[a.dir] || []).push(a); });
+  Object.values(byDir).forEach(list => list.sort((x,y) => x.predArr - y.predArr));
+
+  let html = '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + escapeHtml(stop.n) + '</div>' +
+    '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
+
+  const dirKeys = Object.keys(byDir).filter(k => byDir[k].length);
+  if (!dirKeys.length) {
+    html += '<div style="font-size:12px;color:var(--muted);">No trams from switched-on routes scheduled here in the next hour.</div>';
+  } else {
+    dirKeys.forEach(dir => {
+      const list = byDir[dir].slice(0, 3);
+      const firstDef = ROUTE_DEFS[list[0].routeId] || { name: '' };
+      const fparts = firstDef.name.split(' – ');
+      const headDest = (String(dir) === '1' ? (fparts[1] || fparts[0]) : (fparts[0] || fparts[1])) || '';
+      html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin:8px 0 4px;">→ ' + escapeHtml(headDest) + '</div>';
+      list.forEach(a => {
+        const def = ROUTE_DEFS[a.routeId] || { color:'#888', name:'' };
+        const parts = def.name.split(' – ');
+        const dest = (String(a.dir) === '1' ? (parts[1] || parts[0]) : (parts[0] || parts[1])) || '';
+        const mins = Math.round((a.predArr - cs) / 60);
+        const minsLabel = mins <= 0 ? 'Due' : mins + ' min';
+        const dmin = Math.round(a.delay / 60);
+        const status = dmin > 2 ? dmin + ' late' : dmin < -1 ? Math.abs(dmin) + ' early' : 'on time';
+        const scol = dmin > 2 ? '#f87171' : dmin < -1 ? '#34d399' : '#94a3b8';
+        html += '<div class="info-row" style="align-items:center;margin-bottom:6px;">' +
+          '<span class="info-route-badge" style="background:' + def.color + ';margin-right:8px;">' + a.routeId + '</span>' +
+          '<span style="flex:1;font-size:12px;">' + escapeHtml(dest) + '</span>' +
+          '<span style="font-family:var(--font-mono);font-size:13px;font-weight:600;margin-right:8px;">' + minsLabel + '</span>' +
+          '<span style="font-family:var(--font-mono);font-size:10px;color:' + scol + ';">' + status + '</span>' +
+          '</div>';
+      });
+    });
+    html += '<div style="font-size:9px;color:var(--muted);font-family:var(--font-mono);margin-top:8px;">Estimated from timetable + live delays</div>';
+  }
+
+  document.getElementById('info-content').innerHTML = html;
+  document.getElementById('info-panel').classList.add('visible');
+}
+
+// ── Service alerts ────────────────────────────────────────────
+function renderAlerts() {
+  const affected = new Set();
+  serviceAlerts.forEach(a => (a.routes || []).forEach(r => affected.add(String(r))));
+  Object.keys(ROUTE_DEFS).forEach(id => {
+    document.getElementById('route-item-' + id)?.classList.toggle('has-alert', affected.has(id));
+  });
+  const btn = document.getElementById('alerts-btn');
+  const countEl = document.getElementById('alerts-count');
+  if (!btn) return;
+  if (serviceAlerts.length) { btn.style.display = ''; if (countEl) countEl.textContent = serviceAlerts.length; }
+  else { btn.style.display = 'none'; document.getElementById('alerts-panel')?.classList.remove('visible'); }
+}
+
+function toggleAlertsPanel() {
+  const p = document.getElementById('alerts-panel');
+  if (!p) return;
+  if (p.classList.contains('visible')) { p.classList.remove('visible'); return; }
+  let html = '<button class="info-close-x" onclick="toggleAlertsPanel()">×</button>' +
+    '<div style="font-weight:600;font-size:14px;margin-bottom:10px;">Service Alerts</div>';
+  if (!serviceAlerts.length) {
+    html += '<div style="font-size:12px;color:var(--muted)">No current disruptions.</div>';
+  } else {
+    serviceAlerts.forEach(a => {
+      const badges = (a.routes || []).map(r => {
+        const def = ROUTE_DEFS[String(r)];
+        return def ? '<span class="info-route-badge" style="background:' + def.color + ';margin-right:4px;">' + r + '</span>' : '';
+      }).join('');
+      html += '<div style="margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:10px;">' +
+        (badges ? '<div style="margin-bottom:4px;">' + badges + '</div>' : '') +
+        '<div style="font-size:12px;font-weight:600;margin-bottom:2px;">' + escapeHtml(a.header || '') + '</div>' +
+        (a.description ? '<div style="font-size:11px;color:var(--muted);line-height:1.4;">' + escapeHtml(a.description) + '</div>' : '') +
+        (a.url ? '<a href="' + encodeURI(a.url) + '" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);">More info →</a>' : '') +
+        '</div>';
+    });
+  }
+  p.innerHTML = html;
+  p.classList.add('visible');
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
