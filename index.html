@@ -391,12 +391,12 @@
   </div>
 </div>
 
-<div id="info-panel">
+<div id="info-panel" onclick="closeInfo()">
   <button id="info-close" onclick="closeInfo()">×</button>
   <div id="info-content"></div>
 </div>
 
-<div id="alerts-panel"></div>
+<div id="alerts-panel" onclick="toggleAlertsPanel()"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate.js"></script>
@@ -506,24 +506,42 @@ let scheduleTimer = null;
 // Trip delays from GTFS-RT Trip Updates feed: tripId → delaySecs
 // Positive = running late, negative = running early
 let tripDelays = {};  // populated from Worker response
+// Per-stop delay change-points: tripId → [[stopId, delaySecs], ...]
+// A delay applies from its stop onward until the next change-point (GTFS-RT semantics)
+let tripStopDelays = {};
+let lastFetchOk = 0;            // Date.now() of last successful Worker fetch
+let lastStopPanelRender = 0;    // nowSecs() of last stop-panel render (for live refresh)
+
+// Victorian public holidays 2026. Trams generally run a Saturday timetable on
+// public holidays, except Good Friday + Christmas Day which run Sunday timetables.
+// (2026-09-25 = AFL Grand Final Friday — verify once AFL confirms the date.)
+const VIC_HOLIDAYS_SUNDAY = new Set(['20260403','20261225']);
+const VIC_HOLIDAYS_SATURDAY = new Set([
+  '20260101','20260126','20260309','20260404','20260406','20260425',
+  '20260608','20260925','20261103','20261226','20261228'
+]);
 
 function getTodayType() {
-  // Returns day type accounting for public holidays → Saturday
-  const d = new Date();
+  // "Service day": before 4am counts as the previous day, matching GTFS >24h
+  // times (a 1:30am tram belongs to yesterday's timetable as 25:30).
+  const d = new Date(Date.now() - 4*3600*1000);
+  const ds = '' + d.getFullYear() +
+    String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+  if (VIC_HOLIDAYS_SUNDAY.has(ds)) return 'sunday';
+  if (VIC_HOLIDAYS_SATURDAY.has(ds)) return 'saturday';
   const dow = d.getDay(); // 0=Sun, 6=Sat
-  // Australian public holidays - treat as Saturday
-  const dateStr = d.toISOString().slice(0,10).replace(/-/g,'');
-  // Public holidays known from calendar_dates (exception_type=2 means removed,
-  // but we treat unknown/holiday dates as Saturday)
   if (dow === 0) return 'sunday';
   if (dow === 6) return 'saturday';
   return 'weekday';
 }
 
 function nowSecs() {
-  // Current time as seconds since midnight (handles >24h for overnight trips)
+  // Seconds since *service day* start: between midnight and 4am we are still on
+  // yesterday's timetable, so the clock continues past 86400 (GTFS >24h times)
   const d = new Date();
-  return d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
+  let s = d.getHours()*3600 + d.getMinutes()*60 + d.getSeconds();
+  if (d.getHours() < 4) s += 86400;
+  return s;
 }
 
 
@@ -551,19 +569,40 @@ function posOnShape(shape, dist) {
   };
 }
 
+// Effective per-stop times for a trip: schedule + per-stop GTFS-RT delays.
+// Uses change-points from tripStopDelays (a delay carries forward until the
+// next specified stop). Falls back to the whole-trip delay when per-stop data
+// is absent, and keeps times monotonic (a tram can't arrive before it left).
+function effectiveStopTimes(trip) {
+  const stops = trip.stops;
+  const out = new Array(stops.length);
+  const sd = tripStopDelays[trip.id];
+  if (!sd || !sd.length) {
+    const base = tripDelays[trip.id] || 0;
+    for (let i = 0; i < stops.length; i++) out[i] = trip.start + stops[i][1] + base;
+    return out;
+  }
+  const change = {};
+  for (const cp of sd) change[String(cp[0])] = cp[1];
+  let cur = sd[0][1]; // stops before the first change-point: use first known delay
+  for (let i = 0; i < stops.length; i++) {
+    const d = change[String(stops[i][0])];
+    if (d !== undefined) cur = d;
+    let t = trip.start + stops[i][1] + cur;
+    if (i > 0 && t < out[i-1] + 1) t = out[i-1] + 1; // monotonic guard
+    out[i] = t;
+  }
+  return out;
+}
+
 // Given a trip and current time, return interpolated {lat, lng, bearing} or null
 // Uses shape geometry for smooth path-following
-// Applies GPS-derived delay offset so tram shows where it actually is
+// Positions are driven by per-stop effective times (schedule + live delays)
 function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
-  // Apply official delay from GTFS-RT Trip Updates feed
-  // tripDelays keys are GTFS trip_ids matching our schedule trip ids
-  const delaySecs = tripDelays[trip.id] || 0;
-  currentSecs = currentSecs - delaySecs;  // shift time back by delay amount
-  const tripStart = trip.start;
   const tripStops = trip.stops; // [stop_id, delta_secs, shape_dist]
 
-  // Absolute times for each stop
-  const absTimes = tripStops.map(s => tripStart + s[1]);
+  // Effective (delay-adjusted) absolute times for each stop
+  const absTimes = effectiveStopTimes(trip);
   const tripEnd  = absTimes[absTimes.length - 1];
 
   // Not active yet or already finished
@@ -623,11 +662,11 @@ function interpolateTrip(trip, stops_dict, network_routes, currentSecs) {
   } else if (segDuration > DWELL_SECS + 5) {
     // Travelling — compress journey into (segDuration - DWELL_SECS) seconds
     const travelTime = segDuration - DWELL_SECS;
-    frac = Math.min(1, (elapsed - DWELL_SECS) / travelTime);
+    frac = Math.max(0, Math.min(1, (elapsed - DWELL_SECS) / travelTime));
     dwellingAtStop = false;
   } else {
     // Short segment (< 25s) — normal linear interpolation, no room for dwell
-    frac = segDuration > 0 ? Math.min(1, elapsed / segDuration) : 0;
+    frac = segDuration > 0 ? Math.max(0, Math.min(1, elapsed / segDuration)) : 0;
     dwellingAtStop = false;
   }
 
@@ -691,7 +730,7 @@ function makeTramSVG(routeId, color, bearing, vehicleId) {
   return (
     '<svg id="vm-' + vehicleId + '" width="36" height="36" viewBox="-18 -18 36 36"' +
     ' xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible;">' +
-    '<g transform="rotate(' + bearing + ')" style="' + arrowVis + '">' +
+    '<g transform="rotate(' + (bearing - mapBearing) + ')" style="' + arrowVis + '">' +
     // Arrow triangle (pointing up = direction of travel)
     '<polygon points="' + pts + '" fill="white" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round"/>' +
     '</g>' +
@@ -878,6 +917,8 @@ function tickSchedule() {
   const cs = nowSecs();
   // Keep compass + arrow compensation in sync with any map rotation
   if (typeof map.getBearing === 'function') { mapBearing = map.getBearing() || 0; }
+  // Flag stale data: positions keep animating but delays stop updating
+  if (lastFetchOk && Date.now() - lastFetchOk > 60000) setStatus('stale', 'stale data');
   const active = getActiveTrips(cs);
 
 
@@ -941,6 +982,11 @@ function tickSchedule() {
   });
 
   updateTramCount();
+
+  // Live-refresh the stop arrivals panel so the minutes count down
+  if (selectedStop !== null && cs - lastStopPanelRender >= 15) {
+    showStopInfo(selectedStop);
+  }
 }
 
 
@@ -957,18 +1003,17 @@ function showScheduleInfo(tramId) {
 
   // Find next stop
   const cs = nowSecs();
-  // Apply same delay offset used for positioning so next stop matches displayed location
-  const delaySecs = tripDelays[t.trip.id] || 0;
-  const adjustedCs = cs - delaySecs;
-  const nextStopIdx = t.trip.stops.findIndex(s => t.trip.start + s[1] > adjustedCs);
+  // Use the same per-stop effective times as positioning so the panel matches the map
+  const effTimes = effectiveStopTimes(t.trip);
+  const nextStopIdx = effTimes.findIndex(tt => tt > cs);
   let nextStopHtml = '';
   if (nextStopIdx >= 0) {
     const ns = t.trip.stops[nextStopIdx];
     // Use TRAM_NETWORK.stops for full stop names
     const stopFull = TRAM_NETWORK && TRAM_NETWORK.stops && TRAM_NETWORK.stops[String(ns[0])];
     const stopName = stopFull ? stopFull : { n: 'Stop ' + ns[0] };
-    const arrSecs = t.trip.start + ns[1];
-    const minsAway = Math.round((arrSecs - adjustedCs) / 60);
+    const arrSecs = effTimes[nextStopIdx];
+    const minsAway = Math.round((arrSecs - cs) / 60);
     // Convert schedule seconds to HH:MM — schedule is in local Melbourne time
     const arrSecsLocal = arrSecs % 86400;
     const arrHH = Math.floor(arrSecsLocal / 3600) % 24;
@@ -995,8 +1040,12 @@ function showScheduleInfo(tramId) {
     nextStopHtml +
     '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>' +
     (function() {
-      const ds = tripDelays[t.trip.id];
-      if (ds === undefined) return '';
+      const hasData = (tripStopDelays[t.trip.id] && tripStopDelays[t.trip.id].length) || tripDelays[t.trip.id] !== undefined;
+      if (!hasData) return '';
+      // Delay at the next stop specifically (varies along the route)
+      const ds = nextStopIdx >= 0
+        ? effTimes[nextStopIdx] - (t.trip.start + t.trip.stops[nextStopIdx][1])
+        : (tripDelays[t.trip.id] || 0);
       const mins = Math.round(ds / 60);
       const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
       const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
@@ -1182,11 +1231,13 @@ async function fetchTrams() {
 
     // Store trip delays from Trip Updates feed
     if (json.delays) tripDelays = json.delays;
+    tripStopDelays = json.stopDelays || {};
+    lastFetchOk = Date.now();
     // Store service alerts (present once the Worker exposes them)
     serviceAlerts = json.alerts || [];
     renderAlerts();
     processVehicles(vehicles);
-    setStatus('live', vehicles.length + ' on network');
+    setStatus('live', 'live');
     document.getElementById('error-banner').style.display = 'none';
 
     const now = new Date();
@@ -1319,22 +1370,26 @@ function showStopInfo(sid) {
     const trips = SCHEDULE.trips[routeId] || [];
     trips.forEach(trip => {
       // Find the stop in this trip nearest the tapped location
-      let best = null, bestD = Infinity;
-      for (const st of trip.stops) {
+      let best = null, bestIdx = -1, bestD = Infinity;
+      for (let si = 0; si < trip.stops.length; si++) {
+        const st = trip.stops[si];
         const sc = SCHEDULE.stops[String(st[0])];
         if (!sc) continue;
         const d = metresBetween(tapLat, tapLng, sc[0], sc[1]);
-        if (d < bestD) { bestD = d; best = st; }
+        if (d < bestD) { bestD = d; best = st; bestIdx = si; }
       }
       if (!best || bestD > RADIUS_M) return;
-      const schedArr = trip.start + best[1];
-      const delay = tripDelays[trip.id] || 0;
-      const predArr = schedArr + delay;
+      const effT = effectiveStopTimes(trip);
+      const predArr = effT[bestIdx];                       // per-stop prediction
+      const delay = predArr - (trip.start + best[1]);      // delay at THIS stop
       if (predArr < cs - 90 || predArr > cs + 3600) return; // next ~hour only
       const key = routeId + '_' + trip.dir + '_' + trip.start;
       if (seen.has(key)) return;
       seen.add(key);
-      arrivals.push({ routeId, dir: trip.dir, predArr, delay });
+      // Destination = the trip's actual final stop (robust, unlike name-order guessing)
+      const lastSt = TRAM_NETWORK.stops[String(trip.stops[trip.stops.length-1][0])];
+      const dest = lastSt && lastSt.n ? lastSt.n.replace(/\s*#\S+$/, '') : null;
+      arrivals.push({ routeId, dir: trip.dir, predArr, delay, dest });
     });
   });
 
@@ -1353,12 +1408,12 @@ function showStopInfo(sid) {
       const list = byDir[dir].slice(0, 3);
       const firstDef = ROUTE_DEFS[list[0].routeId] || { name: '' };
       const fparts = firstDef.name.split(' – ');
-      const headDest = (String(dir) === '1' ? (fparts[1] || fparts[0]) : (fparts[0] || fparts[1])) || '';
+      const headDest = list[0].dest || ((String(dir) === '1' ? (fparts[1] || fparts[0]) : (fparts[0] || fparts[1])) || '');
       html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin:8px 0 4px;">→ ' + escapeHtml(headDest) + '</div>';
       list.forEach(a => {
         const def = ROUTE_DEFS[a.routeId] || { color:'#888', name:'' };
         const parts = def.name.split(' – ');
-        const dest = (String(a.dir) === '1' ? (parts[1] || parts[0]) : (parts[0] || parts[1])) || '';
+        const dest = a.dest || ((String(a.dir) === '1' ? (parts[1] || parts[0]) : (parts[0] || parts[1])) || '');
         const mins = Math.round((a.predArr - cs) / 60);
         const minsLabel = mins <= 0 ? 'Due' : mins + ' min';
         const dmin = Math.round(a.delay / 60);
@@ -1377,6 +1432,7 @@ function showStopInfo(sid) {
 
   document.getElementById('info-content').innerHTML = html;
   document.getElementById('info-panel').classList.add('visible');
+  lastStopPanelRender = cs;
 }
 
 // ── Service alerts ────────────────────────────────────────────
@@ -1397,7 +1453,7 @@ function toggleAlertsPanel() {
   const p = document.getElementById('alerts-panel');
   if (!p) return;
   if (p.classList.contains('visible')) { p.classList.remove('visible'); return; }
-  let html = '<button class="info-close-x" onclick="toggleAlertsPanel()">×</button>' +
+  let html = '<button class="info-close-x" onclick="event.stopPropagation();toggleAlertsPanel()">×</button>' +
     '<div style="font-weight:600;font-size:14px;margin-bottom:10px;">Service Alerts</div>';
   if (!serviceAlerts.length) {
     html += '<div style="font-size:12px;color:var(--muted)">No current disruptions.</div>';
@@ -1411,7 +1467,7 @@ function toggleAlertsPanel() {
         (badges ? '<div style="margin-bottom:4px;">' + badges + '</div>' : '') +
         '<div style="font-size:12px;font-weight:600;margin-bottom:2px;">' + escapeHtml(a.header || '') + '</div>' +
         (a.description ? '<div style="font-size:11px;color:var(--muted);line-height:1.4;">' + escapeHtml(a.description) + '</div>' : '') +
-        (a.url ? '<a href="' + encodeURI(a.url) + '" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);">More info →</a>' : '') +
+        (a.url ? '<a href="' + encodeURI(a.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:11px;color:var(--accent);">More info →</a>' : '') +
         '</div>';
     });
   }
