@@ -154,6 +154,17 @@
     backdrop-filter: blur(8px);
   }
   #info-panel.visible { display: block; }
+  #notice-overlay {
+    position: fixed; inset: 0; z-index: 3000; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.35);
+  }
+  #notice-overlay.visible { display: flex; }
+  #notice-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 26px; font-size: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5); max-width: 80vw; text-align: center;
+  }
   #info-close {
     position: absolute; top: 8px; right: 12px;
     background: none; border: none; color: var(--muted);
@@ -361,6 +372,9 @@
           <button class="all-btn" onclick="setAllRoutes(true)">All On</button>
           <button class="all-btn" onclick="setAllRoutes(false)">All Off</button>
         </div>
+        <div style="display:flex;padding:0 14px 8px;">
+          <button class="all-btn" onclick="nearbyStops()">◎ Nearby Stops</button>
+        </div>
       </div>
       <div id="route-list"></div>
       <div id="sidebar-footer">
@@ -384,6 +398,7 @@
       <div id="mobile-all-btns">
         <button class="mobile-all-btn" onclick="setAllRoutes(true)">All On</button>
         <button class="mobile-all-btn" onclick="setAllRoutes(false)">All Off</button>
+        <button class="mobile-all-btn" onclick="nearbyStops()">Nearby Stops</button>
       </div>
       <div id="mobile-tram-count">— trams</div>
     </div>
@@ -391,6 +406,9 @@
   </div>
 </div>
 
+<div id="notice-overlay" onclick="this.classList.remove('visible')">
+  <div id="notice-card"></div>
+</div>
 <div id="info-panel" onclick="closeInfo()">
   <button id="info-close" onclick="closeInfo()">×</button>
   <div id="info-content"></div>
@@ -893,8 +911,9 @@ function initMap() {
 
 // ── Geolocation ──────────────────────────────────────────────────────────────
 let locationMarker = null, accuracyCircle = null;
+let userLoc = null;   // {lat, lng} from the last geolocate fix
 
-function locateMe() {
+function locateMe(onFix) {
   const btn = document.getElementById('locate-btn');
   if (!navigator.geolocation) {
     alert('Geolocation is not supported by your browser.');
@@ -931,6 +950,8 @@ function locateMe() {
 
       btn.classList.remove('locating');
       btn.classList.add('located');
+      userLoc = { lat, lng };
+      if (typeof onFix === 'function') onFix();
     },
     err => {
       btn.classList.remove('locating');
@@ -940,6 +961,36 @@ function locateMe() {
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
+}
+
+// Show a transient centred notice; tapping anywhere dismisses it
+function showNotice(msg) {
+  const ov = document.getElementById('notice-overlay');
+  document.getElementById('notice-card').textContent = msg;
+  ov.classList.add('visible');
+}
+
+// "Nearby Stops": switch on only routes with a stop within NEARBY_RADIUS_M of
+// the user's location. No fix yet → run the geolocate flow first, then filter.
+// Nothing nearby → tell the user and restore all routes.
+const NEARBY_RADIUS_M = 250;
+function nearbyStops() {
+  if (!userLoc) { locateMe(nearbyStops); return; }
+  if (!TRAM_NETWORK) return;
+  const found = new Set();
+  Object.values(TRAM_NETWORK.stops).forEach(s => {
+    if (metresBetween(userLoc.lat, userLoc.lng, s.lat, s.lng) <= NEARBY_RADIUS_M) {
+      (s.r || []).forEach(r => found.add(r));
+    }
+  });
+  const known = [...found].filter(r => ROUTE_DEFS[r]);
+  if (!known.length) {
+    setAllRoutes(true);
+    showNotice('Sorry, no trams are nearby');
+    return;
+  }
+  setAllRoutes(false);
+  known.forEach(r => { if (!activeRoutes.has(r)) toggleRoute(r); });
 }
 
 // ── Schedule loading ─────────────────────────────────────────────────────────
@@ -1490,8 +1541,16 @@ function showStopInfo(sid) {
   arrivals.forEach(a => { (byDir[a.dir] = byDir[a.dir] || []).push(a); });
   Object.values(byDir).forEach(list => list.sort((x,y) => x.predArr - y.predArr));
 
-  let html = '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + escapeHtml(stop.n) + '</div>' +
-    '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
+  let html = '<div style="font-weight:600;font-size:14px;margin-bottom:2px;">' + escapeHtml(stop.n) + '</div>';
+  // Walk time from the last geolocate fix: straight-line distance × 1.25 street
+  // detour factor, at 80 m/min (~4.8 km/h), rounded up. Omitted with no fix.
+  if (userLoc) {
+    const walkM = metresBetween(userLoc.lat, userLoc.lng, stop.lat, stop.lng);
+    const mins = Math.max(1, Math.ceil((walkM * 1.25) / 80));
+    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:2px;">Approx ' +
+      mins + ' minute' + (mins === 1 ? '' : 's') + ' walk</div>';
+  }
+  html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
 
   const dirKeys = Object.keys(byDir).filter(k => byDir[k].length);
   if (!dirKeys.length) {
