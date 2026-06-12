@@ -818,9 +818,9 @@ function makeTramSVG(routeId, color, bearing, vehicleId) {
   const r = 11; // circle radius
   const fs = routeId.length > 2 ? 7 : 9; // font size
   // Arrow triangle: tip at top, base overlapping circle edge
-  const tipY = -(r + 7);   // sharp tip extends beyond circle
+  const tipY = -(r + 12);  // sharp tip extends beyond circle
   const baseY = -(r - 3);  // base sits inside circle edge
-  const baseW = 5;          // half-width of base
+  const baseW = 7.5;        // half-width of base
   const pts = '0,' + tipY + ' -' + baseW + ',' + baseY + ' ' + baseW + ',' + baseY;
   const arrowVis = bearing ? '' : 'display:none;';
   return (
@@ -973,7 +973,7 @@ function showNotice(msg) {
 // "Nearby Stops": switch on only routes with a stop within NEARBY_RADIUS_M of
 // the user's location. No fix yet → run the geolocate flow first, then filter.
 // Nothing nearby → tell the user and restore all routes.
-const NEARBY_RADIUS_M = 250;
+const NEARBY_RADIUS_M = 500;
 function nearbyStops() {
   if (!userLoc) { locateMe(nearbyStops); return; }
   if (!TRAM_NETWORK) return;
