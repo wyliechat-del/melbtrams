@@ -528,6 +528,26 @@ let tripDelays = {};  // populated from Worker response
 // A delay applies from its stop onward until the next change-point (GTFS-RT semantics)
 let tripStopDelays = {};
 let LAST_LIVE_JSON = null;   // most recent worker payload, for re-translation
+let FEED_TO_TRIP = {};       // feed tripId → resolved schedule trip (set per fetch)
+let TRAM_META = {};          // tripKey → { model, gpsDelay, pingAge } from GPS feed
+
+// ── Tier 2 tuning dials — live-adjustable from the dev-tools console, e.g.
+//    TUNING.T = 60  — takes effect on the next fetch, no redeploy needed.
+window.TUNING = {
+  G: 0.2,        // GPS delay blend gain per fetch, 0..1 (declared now; applied to positioning in a later build)
+  T: 180,        // GPS ignore limit: discard pings older than this many seconds
+  OFFSHAPE_M: 50 // discard GPS readings further than this many metres from the route shape
+};
+
+// Rolling-stock class → boarding accessibility (shown in the tram info panel)
+const TRAM_ACCESS = {
+  'E': 'Low floor accessible',  'E2': 'Low floor accessible',
+  'C1': 'Low floor accessible', 'C2': 'Low floor accessible',
+  'D1': 'Low floor accessible', 'D2': 'Low floor accessible',
+  'A1': 'High floor (steps)',   'A2': 'High floor (steps)',
+  'B1': 'High floor (steps)',   'B2': 'High floor (steps)',
+  'Z3': 'High floor (steps)',   'W':  'High floor heritage (steps)'
+};
 let lastFetchOk = 0;            // Date.now() of last successful Worker fetch
 let lastStopPanelRender = 0;    // nowSecs() of last stop-panel render (for live refresh)
 
@@ -593,6 +613,106 @@ function posOnShape(shape, dist) {
   };
 }
 
+// ── Tier 2: GPS as a delay sensor (console-only this build) ──────────────────
+// Each GPS ping carries its own timestamp, so staleness doesn't matter: we ask
+// where the schedule said this trip should have been AT THE PING'S MOMENT and
+// convert the along-shape gap to seconds. Readings older than TUNING.T or
+// further than TUNING.OFFSHAPE_M from the shape are discarded (dead transponders
+// hold their last position in this feed — see the 47-minute route 48 ping).
+
+// Inverse shape projection: nearest point on shape → cumulative distance + offset
+function projectOnShape(shape, lat, lng) {
+  if (!shape || shape.length < 2) return null;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat * Math.PI / 180);
+  let bestOff2 = Infinity, bestDist = 0;
+  for (let i = 0; i < shape.length - 1; i++) {
+    const ax = (shape[i][1] - lng) * mLng,   ay = (shape[i][0] - lat) * mLat;
+    const bx = (shape[i+1][1] - lng) * mLng, by = (shape[i+1][0] - lat) * mLat;
+    const dx = bx - ax, dy = by - ay;
+    const L2 = dx*dx + dy*dy;
+    let t = L2 > 0 ? -(ax*dx + ay*dy) / L2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = ax + dx*t, py = ay + dy*t;
+    const off2 = px*px + py*py;
+    if (off2 < bestOff2) {
+      bestOff2 = off2;
+      bestDist = shape[i][2] + (shape[i+1][2] - shape[i][2]) * t;
+    }
+  }
+  return { dist: bestDist, off: Math.sqrt(bestOff2) };
+}
+
+// Scheduled (raw, no delays) service-day seconds at a given shape distance
+function schedSecsAtDist(trip, dist) {
+  const st = trip.stops;
+  if (dist <= st[0][2]) return trip.start + st[0][1];
+  for (let i = 0; i < st.length - 1; i++) {
+    if (dist <= st[i+1][2]) {
+      const d0 = st[i][2], d1 = st[i+1][2];
+      const f = d1 > d0 ? (dist - d0) / (d1 - d0) : 0;
+      return trip.start + st[i][1] + (st[i+1][1] - st[i][1]) * f;
+    }
+  }
+  return trip.start + st[st.length-1][1];
+}
+
+// Per fetch: compute observed GPS delays, log vs Trip Updates, harvest tram models.
+// No effect on positioning yet — field-validation pass first.
+function gpsDelaySensor(json) {
+  if (!SCHEDULE || !TRAM_NETWORK) return;
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const csNow = nowSecs();
+  const meta = {};
+  let total = 0, unmatched = 0, stale = 0, offshape = 0, used = 0;
+  const ages = [], rows = [];
+  (json.vehicles || []).forEach(v => {
+    total++;
+    const trip = FEED_TO_TRIP[v.tripId];
+    if (!trip) { unmatched++; return; }
+    const key = tripKey(trip);
+    if (v.vehicleLabel) (meta[key] = meta[key] || {}).model = v.vehicleLabel;
+    if (!v.ts) { stale++; return; }
+    const age = nowEpoch - v.ts;
+    ages.push(age);
+    if (age > TUNING.T) { stale++; return; }
+    const dirs = TRAM_NETWORK.routes[trip.routeId];
+    const shape = dirs ? (dirs[String(trip.dir)] || dirs['0']) : null;
+    if (!shape) { unmatched++; return; }
+    const proj = projectOnShape(shape, v.lat, v.lng);
+    if (!proj || proj.off > TUNING.OFFSHAPE_M) { offshape++; return; }
+    const pingSecs = csNow - age;   // service-day seconds at the ping's moment
+    const obs = Math.round(pingSecs - schedSecsAtDist(trip, proj.dist));
+    used++;
+    const tu = tripDelays[key];
+    const m = (meta[key] = meta[key] || {});
+    m.gpsDelay = obs; m.pingAge = age;
+    rows.push({ route: trip.routeId, gps: obs, tu: tu === undefined ? null : tu,
+                diff: tu === undefined ? null : obs - tu });
+  });
+  TRAM_META = meta;   // replaced wholesale each fetch, same lifecycle as delays
+  ages.sort((a, b) => a - b);
+  const p50 = ages.length ? ages[ages.length >> 1] : '—';
+  // Ghost sizing: how many schedule-active trips does Trip Updates not mention?
+  let activeN = 0, noTU = 0;
+  try {
+    getActiveTrips(csNow).forEach(({ routeId, trip }) => {
+      activeN++; trip.routeId = routeId;
+      if (tripDelays[tripKey(trip)] === undefined && (!tripStopDelays[tripKey(trip)])) noTU++;
+    });
+  } catch (e) {}
+  console.log('GPS sensor: ' + total + ' vehicles | used ' + used +
+    ' | unmatched ' + unmatched + ' | stale>' + TUNING.T + 's ' + stale +
+    ' | offshape>' + TUNING.OFFSHAPE_M + 'm ' + offshape +
+    ' | ping age p50 ' + p50 + 's || schedule-active ' + activeN + ', missing from TU ' + noTU);
+  const cmp = rows.filter(r => r.diff !== null);
+  if (cmp.length) {
+    const mad = Math.round(cmp.reduce((s, r) => s + Math.abs(r.diff), 0) / cmp.length);
+    cmp.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+    console.log('GPS vs TU delay: ' + cmp.length + ' comparable | mean |diff| ' + mad + 's | biggest: ' +
+      cmp.slice(0, 5).map(r => 'rt' + r.route + ' gps ' + r.gps + 's / tu ' + r.tu + 's').join(', '));
+  }
+}
+
 // ── Live-delay matching ──────────────────────────────────────────────────────
 // Feed trip ids come from a different static-GTFS generation than the schedule
 // JSONs, so they never match directly. Instead we match by (route, start time),
@@ -626,9 +746,9 @@ function buildSchedIndex() {
 
 // json → { delays: {compositeKey→secs}, stopDelays: {compositeKey→changePoints} }
 function translateLiveDelays(json) {
-  const delays = {}, stopDelays = {};
+  const delays = {}, stopDelays = {}, feedToTrip = {};
   const starts = json.tripStarts || {};
-  if (!SCHEDULE) return { delays, stopDelays };
+  if (!SCHEDULE) return { delays, stopDelays, feedToTrip };
   let matched = 0, ambiguous = 0, unmatched = 0;
   for (const ftid in starts) {
     const meta = starts[ftid];
@@ -656,12 +776,13 @@ function translateLiveDelays(json) {
       if (!chosen) { ambiguous++; continue; }   // conservative: no data beats wrong data
     }
     const key = tripKey(chosen);
+    feedToTrip[ftid] = chosen;
     matched++;
     if (json.delays && ftid in json.delays) delays[key] = json.delays[ftid];
     if (json.stopDelays && json.stopDelays[ftid]) stopDelays[key] = json.stopDelays[ftid];
   }
   console.log('Delay matching: ' + matched + ' matched, ' + ambiguous + ' ambiguous, ' + unmatched + ' unmatched');
-  return { delays, stopDelays };
+  return { delays, stopDelays, feedToTrip };
 }
 
 // Effective per-stop times for a trip: schedule + per-stop GTFS-RT delays.
@@ -1035,6 +1156,8 @@ async function loadSchedule() {
       const live = translateLiveDelays(LAST_LIVE_JSON);
       tripDelays = live.delays;
       tripStopDelays = live.stopDelays;
+      FEED_TO_TRIP = live.feedToTrip || {};
+      gpsDelaySensor(LAST_LIVE_JSON);
     }
     console.log('Schedule loaded:', Object.keys(SCHEDULE.trips).length, 'routes',
       Object.values(SCHEDULE.trips).reduce((s,t) => s+t.length, 0), 'trips');
@@ -1192,6 +1315,12 @@ function showScheduleInfo(tramId) {
       const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
       const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
       return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
+    })() +
+    (function() {
+      const m = TRAM_META[tripKey(t.trip)];
+      if (!m || !m.model) return '';
+      const acc = TRAM_ACCESS[m.model] ? ' \u2013 ' + TRAM_ACCESS[m.model] : '';
+      return '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Tram model ' + m.model + acc + '</div>';
     })();
 
   document.getElementById('info-panel').classList.add('visible');
@@ -1376,6 +1505,8 @@ async function fetchTrams() {
     const live = translateLiveDelays(json);
     tripDelays = live.delays;
     tripStopDelays = live.stopDelays;
+    FEED_TO_TRIP = live.feedToTrip || {};
+    gpsDelaySensor(json);
     lastFetchOk = Date.now();
     // Store service alerts (present once the Worker exposes them)
     serviceAlerts = json.alerts || [];
@@ -1547,7 +1678,7 @@ function showStopInfo(sid) {
   if (userLoc) {
     const walkM = metresBetween(userLoc.lat, userLoc.lng, stop.lat, stop.lng);
     const mins = Math.max(1, Math.ceil((walkM * 1.25) / 80));
-    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:2px;">Approx ' +
+    html += '<div style="font-size:13px;color:#fff;margin-bottom:2px;">Approx ' +
       mins + ' minute' + (mins === 1 ? '' : 's') + ' walk</div>';
   }
   html += '<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;">NEXT TRAMS</div>';
