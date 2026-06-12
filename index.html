@@ -509,6 +509,7 @@ let tripDelays = {};  // populated from Worker response
 // Per-stop delay change-points: tripId → [[stopId, delaySecs], ...]
 // A delay applies from its stop onward until the next change-point (GTFS-RT semantics)
 let tripStopDelays = {};
+let LAST_LIVE_JSON = null;   // most recent worker payload, for re-translation
 let lastFetchOk = 0;            // Date.now() of last successful Worker fetch
 let lastStopPanelRender = 0;    // nowSecs() of last stop-panel render (for live refresh)
 
@@ -548,10 +549,15 @@ function nowSecs() {
 // Find position on a shape geometry at a given distance along the path
 function posOnShape(shape, dist) {
   if (!shape || shape.length === 0) return null;
-  if (dist <= shape[0][2]) return { lat: shape[0][0], lng: shape[0][1] };
+  // Clamp paths must still return a bearing — omitting it produced
+  // rotate(NaN) errors for every tram sitting at a route terminus.
+  if (dist <= shape[0][2]) {
+    const b = shape.length > 1 ? calcBearing(shape[0][0], shape[0][1], shape[1][0], shape[1][1]) : 0;
+    return { lat: shape[0][0], lng: shape[0][1], bearing: b };
+  }
   if (dist >= shape[shape.length-1][2]) {
-    const p = shape[shape.length-1];
-    return { lat: p[0], lng: p[1] };
+    const p = shape[shape.length-1], q = shape.length > 1 ? shape[shape.length-2] : p;
+    return { lat: p[0], lng: p[1], bearing: shape.length > 1 ? calcBearing(q[0], q[1], p[0], p[1]) : 0 };
   }
   // Binary search for segment
   let lo = 0, hi = shape.length - 1;
@@ -569,6 +575,77 @@ function posOnShape(shape, dist) {
   };
 }
 
+// ── Live-delay matching ──────────────────────────────────────────────────────
+// Feed trip ids come from a different static-GTFS generation than the schedule
+// JSONs, so they never match directly. Instead we match by (route, start time),
+// using the worker's tripStarts meta, and key the live-delay maps by a stable
+// composite: route_dir_start. ~8% of route+start pairs have trips in BOTH
+// directions starting the same second; those are disambiguated by the feed's
+// stopIds (Melbourne stops are direction-specific). Still ambiguous → skipped.
+
+function tripKey(trip) {
+  return trip.routeId + '_' + trip.dir + '_' + trip.start;
+}
+
+let SCHED_INDEX = {};   // routeId → Map(startSecs → [trips, unique by dir])
+function buildSchedIndex() {
+  SCHED_INDEX = {};
+  if (!SCHEDULE) return;
+  Object.entries(SCHEDULE.trips).forEach(([routeId, trips]) => {
+    const m = new Map();
+    const seen = new Set();
+    for (const t of trips) {
+      const k = t.dir + '_' + t.start;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      let arr = m.get(t.start);
+      if (!arr) m.set(t.start, arr = []);
+      arr.push(t);
+    }
+    SCHED_INDEX[routeId] = m;
+  });
+}
+
+// json → { delays: {compositeKey→secs}, stopDelays: {compositeKey→changePoints} }
+function translateLiveDelays(json) {
+  const delays = {}, stopDelays = {};
+  const starts = json.tripStarts || {};
+  if (!SCHEDULE) return { delays, stopDelays };
+  let matched = 0, ambiguous = 0, unmatched = 0;
+  for (const ftid in starts) {
+    const meta = starts[ftid];
+    const route = meta[0], startSecs = meta[1];
+    const idx = SCHED_INDEX[route];
+    if (!idx) { unmatched++; continue; }
+    // Overnight: feed may report real-clock start while the (yesterday)
+    // schedule uses >24h times — try the +86400 variant as fallback
+    let cands = idx.get(startSecs) || idx.get(startSecs + 86400);
+    if (!cands || !cands.length) { unmatched++; continue; }
+    let chosen = null;
+    if (cands.length === 1) {
+      chosen = cands[0];
+    } else {
+      // Both directions start this second — disambiguate via feed stopIds
+      const cps = json.stopDelays && json.stopDelays[ftid];
+      if (cps && cps.length) {
+        const ids = cps.map(c => String(c[0]));
+        const hits = cands.filter(t => {
+          const set = new Set(t.stops.map(s => String(s[0])));
+          return ids.every(id => set.has(id));
+        });
+        if (hits.length === 1) chosen = hits[0];
+      }
+      if (!chosen) { ambiguous++; continue; }   // conservative: no data beats wrong data
+    }
+    const key = tripKey(chosen);
+    matched++;
+    if (json.delays && ftid in json.delays) delays[key] = json.delays[ftid];
+    if (json.stopDelays && json.stopDelays[ftid]) stopDelays[key] = json.stopDelays[ftid];
+  }
+  console.log('Delay matching: ' + matched + ' matched, ' + ambiguous + ' ambiguous, ' + unmatched + ' unmatched');
+  return { delays, stopDelays };
+}
+
 // Effective per-stop times for a trip: schedule + per-stop GTFS-RT delays.
 // Uses change-points from tripStopDelays (a delay carries forward until the
 // next specified stop). Falls back to the whole-trip delay when per-stop data
@@ -576,9 +653,10 @@ function posOnShape(shape, dist) {
 function effectiveStopTimes(trip) {
   const stops = trip.stops;
   const out = new Array(stops.length);
-  const sd = tripStopDelays[trip.id];
+  const k = tripKey(trip);
+  const sd = tripStopDelays[k];
   if (!sd || !sd.length) {
-    const base = tripDelays[trip.id] || 0;
+    const base = tripDelays[k] || 0;
     for (let i = 0; i < stops.length; i++) out[i] = trip.start + stops[i][1] + base;
     return out;
   }
@@ -730,7 +808,7 @@ function makeTramSVG(routeId, color, bearing, vehicleId) {
   return (
     '<svg id="vm-' + vehicleId + '" width="36" height="36" viewBox="-18 -18 36 36"' +
     ' xmlns="http://www.w3.org/2000/svg" style="display:block;overflow:visible;">' +
-    '<g transform="rotate(' + (bearing - mapBearing) + ')" style="' + arrowVis + '">' +
+    '<g transform="rotate(' + ((Number.isFinite(bearing) ? bearing : 0) - mapBearing) + ')" style="' + arrowVis + '">' +
     // Arrow triangle (pointing up = direction of travel)
     '<polygon points="' + pts + '" fill="white" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round"/>' +
     '</g>' +
@@ -895,6 +973,18 @@ async function loadSchedule() {
     Object.values(SCHEDULE.trips).forEach(trips =>
       trips.sort((a, b) => a.start - b.start)
     );
+    // Stamp routeId onto every trip (needed by tripKey everywhere, including
+    // panels that touch trips the animation loop has never ticked)
+    Object.entries(SCHEDULE.trips).forEach(([routeId, trips]) =>
+      trips.forEach(t => { t.routeId = routeId; })
+    );
+    buildSchedIndex();
+    // If live data arrived before the schedule finished loading, match it now
+    if (LAST_LIVE_JSON) {
+      const live = translateLiveDelays(LAST_LIVE_JSON);
+      tripDelays = live.delays;
+      tripStopDelays = live.stopDelays;
+    }
     console.log('Schedule loaded:', Object.keys(SCHEDULE.trips).length, 'routes',
       Object.values(SCHEDULE.trips).reduce((s,t) => s+t.length, 0), 'trips');
     startScheduleAnimation();
@@ -950,7 +1040,7 @@ function tickSchedule() {
       if (iconEl) {
         const gEl = iconEl.querySelector('g');
         if (gEl) {
-          gEl.setAttribute('transform', 'rotate(' + (bearing - mapBearing) + ')');
+          gEl.setAttribute('transform', 'rotate(' + ((Number.isFinite(bearing) ? bearing : 0) - mapBearing) + ')');
           gEl.style.display = bearing ? '' : 'none';
         }
       }
@@ -1040,12 +1130,13 @@ function showScheduleInfo(tramId) {
     nextStopHtml +
     '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>' +
     (function() {
-      const hasData = (tripStopDelays[t.trip.id] && tripStopDelays[t.trip.id].length) || tripDelays[t.trip.id] !== undefined;
+      const tk = tripKey(t.trip);
+      const hasData = (tripStopDelays[tk] && tripStopDelays[tk].length) || tripDelays[tk] !== undefined;
       if (!hasData) return '';
       // Delay at the next stop specifically (varies along the route)
       const ds = nextStopIdx >= 0
         ? effTimes[nextStopIdx] - (t.trip.start + t.trip.stops[nextStopIdx][1])
-        : (tripDelays[t.trip.id] || 0);
+        : (tripDelays[tk] || 0);
       const mins = Math.round(ds / 60);
       const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
       const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
@@ -1230,8 +1321,10 @@ async function fetchTrams() {
     const vehicles = json.vehicles || [];
 
     // Store trip delays from Trip Updates feed
-    if (json.delays) tripDelays = json.delays;
-    tripStopDelays = json.stopDelays || {};
+    LAST_LIVE_JSON = json;
+    const live = translateLiveDelays(json);
+    tripDelays = live.delays;
+    tripStopDelays = live.stopDelays;
     lastFetchOk = Date.now();
     // Store service alerts (present once the Worker exposes them)
     serviceAlerts = json.alerts || [];
