@@ -236,6 +236,9 @@
     transition: filter 0.15s;
   }
   .tram-icon-outer:hover { filter: drop-shadow(0 2px 5px rgba(0,0,0,0.7)) brightness(1.25); }
+  /* Red ring marks trams with a fresh, matched GPS reading (broadcasting) */
+  .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 3; }
+  .tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
   .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
   /* ── Mobile responsive ── */
@@ -330,6 +333,28 @@
     color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1;
   }
   .route-item.has-alert .route-name::after { content: ' ⚠'; color: var(--amber); font-size: 11px; }
+  #tune-btn {
+    position: absolute; bottom: 90px; right: 12px; z-index: 1000;
+    width: 38px; height: 38px; border: none; border-radius: 9px;
+    background: #16b3e8; color: #fff; font: 700 18px/1 'DM Mono', monospace;
+    cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.4); opacity: 0.85;
+  }
+  #tune-btn:hover { opacity: 1; }
+  #tune-panel {
+    position: absolute; bottom: 138px; right: 12px; z-index: 1000;
+    width: 230px; padding: 14px 16px; border-radius: 12px;
+    background: rgba(15,23,42,0.82); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.12); color: #e5e7eb;
+    display: none; font-family: system-ui, sans-serif;
+  }
+  #tune-panel.open { display: block; }
+  #tune-panel .tune-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  #tune-panel .tune-row { margin-bottom: 12px; }
+  #tune-panel label { display: block; font-size: 12px; margin-bottom: 4px; }
+  #tune-panel label span { float: right; color: #16b3e8; font-family: 'DM Mono', monospace; }
+  #tune-panel input[type=range] { width: 100%; accent-color: #16b3e8; }
+  #tune-panel .tune-hint { font-size: 10px; color: #94a3b8; margin-top: 2px; }
+  #tune-panel .tune-foot { font-size: 10px; color: #94a3b8; margin-top: 4px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -408,6 +433,31 @@
 
 <div id="notice-overlay" onclick="this.classList.remove('visible')">
   <div id="notice-card"></div>
+</div>
+<button id="tune-btn" onclick="toggleTunePanel()" title="Calibration">T</button>
+<div id="tune-panel">
+  <div class="tune-title">GPS Calibration</div>
+  <div class="tune-row">
+    <label>G — GPS correction <span id="tv-G"></span></label>
+    <input type="range" id="ts-G" min="0" max="1" step="0.05" oninput="onTune('G', this.value, true)">
+    <div class="tune-hint">0 = timetable · 1 = full GPS</div>
+  </div>
+  <div class="tune-row">
+    <label>T — max ping age <span id="tv-T"></span></label>
+    <input type="range" id="ts-T" min="0" max="900" step="30" oninput="onTune('T', this.value)">
+    <div class="tune-hint">older pings ignored (0–15 min)</div>
+  </div>
+  <div class="tune-row">
+    <label>Off-route limit <span id="tv-OFFSHAPE_M"></span></label>
+    <input type="range" id="ts-OFFSHAPE_M" min="20" max="200" step="10" oninput="onTune('OFFSHAPE_M', this.value)">
+    <div class="tune-hint">metres off shape before distrust</div>
+  </div>
+  <div class="tune-row">
+    <label>D — nearby start <span id="tv-D"></span></label>
+    <input type="range" id="ts-D" min="200" max="1500" step="50" oninput="onTune('D', this.value)">
+    <div class="tune-hint">nearby-stops search radius</div>
+  </div>
+  <div class="tune-foot">Red-ringed trams are broadcasting GPS. Values saved on this device.</div>
 </div>
 <div id="info-panel" onclick="closeInfo()">
   <button id="info-close" onclick="closeInfo()">×</button>
@@ -530,14 +580,24 @@ let tripStopDelays = {};
 let LAST_LIVE_JSON = null;   // most recent worker payload, for re-translation
 let FEED_TO_TRIP = {};       // feed tripId → resolved schedule trip (set per fetch)
 let TRAM_META = {};          // tripKey → { model, gpsDelay, pingAge } from GPS feed
+let GPS_CORR = {};           // tripKey → seconds to add to effective times (G-scaled), ringed trams only
 
 // ── Tier 2 tuning dials — live-adjustable from the dev-tools console, e.g.
 //    TUNING.T = 60  — takes effect on the next fetch, no redeploy needed.
 window.TUNING = {
-  G: 0.2,        // GPS delay blend gain per fetch, 0..1 (declared now; applied to positioning in a later build)
-  T: 180,        // GPS ignore limit: discard pings older than this many seconds
-  OFFSHAPE_M: 50 // discard GPS readings further than this many metres from the route shape
+  G: 0,          // GPS delay blend gain 0..1: 0 = pure timetable, 1 = full GPS correction
+  T: 300,        // GPS ignore limit (seconds): discard pings older than this
+  OFFSHAPE_M: 60,// discard GPS readings further than this many metres from the route shape
+  D: 400         // Nearby-stops starting search radius (metres)
 };
+// Restore field-tuned values from a previous session (localStorage)
+try {
+  const saved = JSON.parse(localStorage.getItem('wmt_tuning') || '{}');
+  for (const k in saved) if (k in window.TUNING && typeof saved[k] === 'number') window.TUNING[k] = saved[k];
+} catch (e) {}
+function saveTuning() {
+  try { localStorage.setItem('wmt_tuning', JSON.stringify(window.TUNING)); } catch (e) {}
+}
 
 // Rolling-stock class → boarding accessibility (shown in the tram info panel)
 const TRAM_ACCESS = {
@@ -663,6 +723,7 @@ function gpsDelaySensor(json) {
   const nowEpoch = Math.floor(Date.now() / 1000);
   const csNow = nowSecs();
   const meta = {};
+  GPS_CORR = {};   // rebuilt every fetch — same lifecycle as delays
   let total = 0, unmatched = 0, stale = 0, offshape = 0, used = 0;
   const ages = [], rows = [];
   (json.vehicles || []).forEach(v => {
@@ -686,6 +747,13 @@ function gpsDelaySensor(json) {
     const tu = tripDelays[key];
     const m = (meta[key] = meta[key] || {});
     m.gpsDelay = obs; m.pingAge = age;
+    // The correction the map will apply: nudge the timetable delay toward the
+    // GPS-observed delay by G. Distrust readings that disagree with TU absurdly
+    // (> 20 min apart = teleport / bad match) — those revert to pure timetable.
+    const tuBase = (tu === undefined ? 0 : tu);
+    if (Math.abs(obs - tuBase) <= 1200) {
+      GPS_CORR[key] = TUNING.G * (obs - tuBase);
+    }
     rows.push({ route: trip.routeId, gps: obs, tu: tu === undefined ? null : tu,
                 diff: tu === undefined ? null : obs - tu });
   });
@@ -710,6 +778,15 @@ function gpsDelaySensor(json) {
     cmp.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
     console.log('GPS vs TU delay: ' + cmp.length + ' comparable | mean |diff| ' + mad + 's | biggest: ' +
       cmp.slice(0, 5).map(r => 'rt' + r.route + ' gps ' + r.gps + 's / tu ' + r.tu + 's').join(', '));
+    // Per-route mean |diff| — surfaces whether specific corridors drift
+    const byRoute = {};
+    cmp.forEach(r => { (byRoute[r.route] = byRoute[r.route] || []).push(Math.abs(r.diff)); });
+    const perRoute = Object.keys(byRoute).sort((a, b) =>
+        (byRoute[b].reduce((s,x)=>s+x,0)/byRoute[b].length) -
+        (byRoute[a].reduce((s,x)=>s+x,0)/byRoute[a].length))
+      .slice(0, 8)
+      .map(rt => rt + ':' + Math.round(byRoute[rt].reduce((s,x)=>s+x,0)/byRoute[rt].length) + 's(' + byRoute[rt].length + ')');
+    console.log('GPS vs TU by route (worst first): ' + perRoute.join('  '));
   }
 }
 
@@ -793,9 +870,10 @@ function effectiveStopTimes(trip) {
   const stops = trip.stops;
   const out = new Array(stops.length);
   const k = tripKey(trip);
+  const corr = GPS_CORR[k] || 0;   // G-scaled GPS correction (0 unless ringed)
   const sd = tripStopDelays[k];
   if (!sd || !sd.length) {
-    const base = tripDelays[k] || 0;
+    const base = (tripDelays[k] || 0) + corr;
     for (let i = 0; i < stops.length; i++) out[i] = trip.start + stops[i][1] + base;
     return out;
   }
@@ -805,7 +883,7 @@ function effectiveStopTimes(trip) {
   for (let i = 0; i < stops.length; i++) {
     const d = change[String(stops[i][0])];
     if (d !== undefined) cur = d;
-    let t = trip.start + stops[i][1] + cur;
+    let t = trip.start + stops[i][1] + cur + corr;
     if (i > 0 && t < out[i-1] + 1) t = out[i-1] + 1; // monotonic guard
     out[i] = t;
   }
@@ -1094,17 +1172,51 @@ function showNotice(msg) {
 // "Nearby Stops": switch on only routes with a stop within NEARBY_RADIUS_M of
 // the user's location. No fix yet → run the geolocate flow first, then filter.
 // Nothing nearby → tell the user and restore all routes.
-const NEARBY_RADIUS_M = 500;
+// ── Calibration panel (T button) ─────────────────────────────────────────────
+function fmtTune(k, v) {
+  if (k === 'T') return (v / 60).toFixed(v % 60 ? 1 : 0) + ' min';
+  if (k === 'OFFSHAPE_M' || k === 'D') return v + ' m';
+  return Number(v).toFixed(2);
+}
+function syncTuneUI() {
+  ['G','T','OFFSHAPE_M','D'].forEach(k => {
+    const s = document.getElementById('ts-' + k), lab = document.getElementById('tv-' + k);
+    if (s) s.value = TUNING[k];
+    if (lab) lab.textContent = fmtTune(k, TUNING[k]);
+  });
+}
+function onTune(k, v, recolorRing) {
+  TUNING[k] = Number(v);
+  const lab = document.getElementById('tv-' + k);
+  if (lab) lab.textContent = fmtTune(k, TUNING[k]);
+  saveTuning();
+  // G and T re-scale the GPS correction from data we already have — apply now
+  // so dragging feels live, rather than waiting up to 15s for the next fetch.
+  if ((k === 'G' || k === 'T') && LAST_LIVE_JSON) gpsDelaySensor(LAST_LIVE_JSON);
+}
+function toggleTunePanel() {
+  const p = document.getElementById('tune-panel');
+  p.classList.toggle('open');
+  if (p.classList.contains('open')) syncTuneUI();
+}
+
 function nearbyStops() {
   if (!userLoc) { locateMe(nearbyStops); return; }
   if (!TRAM_NETWORK) return;
-  const found = new Set();
-  Object.values(TRAM_NETWORK.stops).forEach(s => {
-    if (metresBetween(userLoc.lat, userLoc.lng, s.lat, s.lng) <= NEARBY_RADIUS_M) {
-      (s.r || []).forEach(r => found.add(r));
-    }
-  });
-  const known = [...found].filter(r => ROUTE_DEFS[r]);
+  // Radiating search: start at TUNING.D, grow by 100m until >=1 route appears,
+  // capped at 3km (outer-suburb stops can be 600-800m from any point).
+  const start = TUNING.D || 400;
+  let known = [];
+  for (let radius = start; radius <= 3000; radius += 100) {
+    const found = new Set();
+    Object.values(TRAM_NETWORK.stops).forEach(s => {
+      if (metresBetween(userLoc.lat, userLoc.lng, s.lat, s.lng) <= radius) {
+        (s.r || []).forEach(r => found.add(r));
+      }
+    });
+    known = [...found].filter(r => ROUTE_DEFS[r]);
+    if (known.length) break;
+  }
   if (!known.length) {
     setAllRoutes(true);
     showNotice('Sorry, no trams are nearby');
@@ -1219,6 +1331,8 @@ function tickSchedule() {
         }
       }
       scheduleTrams[tramId].pos = pos;
+      const ic = scheduleTrams[tramId].marker._icon;
+      if (ic) ic.classList.toggle('gps-broadcasting', !!TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined);
     } else {
       // Create new marker
       const icon = L.divIcon({
@@ -1230,6 +1344,8 @@ function tickSchedule() {
       const marker = L.marker([finalLat, finalLng], { icon, zIndexOffset: 100 });
       marker.on('click', () => showScheduleInfo(tramId));
       marker.addTo(map);
+      if (marker._icon && TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined)
+        marker._icon.classList.add('gps-broadcasting');
       scheduleTrams[tramId] = { marker, routeId, trip, pos,
         data: { routeId, vehicleLabel: trip.id, tripId: trip.id,
                 lat: finalLat, lng: finalLng, bearing, speed: '—' }
@@ -1300,6 +1416,13 @@ function showScheduleInfo(tramId) {
     '<div style="display:flex;align-items:center;margin-bottom:12px;">' +
     '<span class="info-route-badge" style="background:' + def.color + '">' + t.routeId + '</span>' +
     '<span style="font-size:13px;font-weight:600;">' + def.name + '</span></div>' +
+    (function() {
+      const m = TRAM_META[tripKey(t.trip)];
+      const txt = (m && m.model)
+        ? 'Tram model ' + m.model + (TRAM_ACCESS[m.model] ? ' \u2013 ' + TRAM_ACCESS[m.model] : '')
+        : 'Tram model not available';
+      return '<div style="font-size:13px;color:#fff;margin-bottom:12px;">' + txt + '</div>';
+    })() +
     '<div class="info-row"><span class="info-label">Direction</span><span class="info-value">' + dirLabel + '</span></div>' +
     nextStopHtml +
     '<div class="info-row"><span class="info-label">Source</span><span class="info-value" style="font-family:var(--font-mono);font-size:11px;">Timetable</span></div>' +
@@ -1315,12 +1438,6 @@ function showScheduleInfo(tramId) {
       const label = mins > 2 ? mins + ' min late' : mins < -1 ? Math.abs(mins) + ' min early' : 'On time';
       const color = mins > 2 ? '#f87171' : mins < -1 ? '#34d399' : '#94a3b8';
       return '<div class="info-row"><span class="info-label">Running</span><span class="info-value" style="color:' + color + ';font-weight:600">' + label + '</span></div>';
-    })() +
-    (function() {
-      const m = TRAM_META[tripKey(t.trip)];
-      if (!m || !m.model) return '';
-      const acc = TRAM_ACCESS[m.model] ? ' \u2013 ' + TRAM_ACCESS[m.model] : '';
-      return '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Tram model ' + m.model + acc + '</div>';
     })();
 
   document.getElementById('info-panel').classList.add('visible');
