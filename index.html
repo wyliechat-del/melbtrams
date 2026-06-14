@@ -365,7 +365,7 @@
     </div>
     <div id="status-group">
       <div id="live-badge" title="Total trams reporting live across the whole Melbourne network — not just the routes you have switched on"><div class="pulse"></div><span id="status-text">Connecting...</span></div>
-      <button id="alerts-btn" style="display:none" title="Service disruptions" onclick="toggleAlertsPanel()">⚠ <span id="alerts-count">0</span></button>
+      <button id="alerts-btn" style="display:none" title="Service disruptions" onclick="toggleAlertsPanel()">✉ <span id="alerts-count">0</span></button>
       <div id="tram-count-badge">— trams</div>
       <div id="clock">--:--:--</div>
       <button id="refresh-btn" onclick="fetchTrams()">↻ Refresh</button>
@@ -431,8 +431,8 @@
   <div class="tune-title">GPS Calibration</div>
   <div class="tune-row">
     <label>G — GPS correction <span id="tv-G"></span></label>
-    <input type="range" id="ts-G" min="0" max="1" step="0.05" oninput="onTune('G', this.value, true)">
-    <div class="tune-hint">0 = timetable · 1 = full GPS</div>
+    <input type="range" id="ts-G" min="-1" max="2" step="0.05" oninput="onTune('G', this.value, true)">
+    <div class="tune-hint">0=TT · 1=GPS · −1/2 overshoot</div>
   </div>
   <div class="tune-row">
     <label>T — max ping age <span id="tv-T"></span></label>
