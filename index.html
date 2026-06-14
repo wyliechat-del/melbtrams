@@ -573,14 +573,17 @@ let LAST_LIVE_JSON = null;   // most recent worker payload, for re-translation
 let FEED_TO_TRIP = {};       // feed tripId → resolved schedule trip (set per fetch)
 let TRAM_META = {};          // tripKey → { model, gpsDelay, pingAge } from GPS feed
 let GPS_CORR = {};           // tripKey → seconds to add to effective times (G-scaled), ringed trams only
+let DRIFT_HIST = {};         // tripKey → [{delay, t(epoch)}] rolling 3 readings (PERSISTS across fetches)
+let TRAM_DRIFT = {};         // tripKey → R (sec-delay per sec), rebuilt each fetch — logging only
+let DRIFT_LINES = {};        // tripKey → red polyline: GPS point → R-projected position-now
 
 // ── Tier 2 tuning dials — live-adjustable from the dev-tools console, e.g.
 //    TUNING.T = 60  — takes effect on the next fetch, no redeploy needed.
 window.TUNING = {
-  G: 0,          // GPS delay blend gain 0..1: 0 = pure timetable, 1 = full GPS correction
-  T: 300,        // GPS ignore limit (seconds): discard pings older than this
+  G: 0.2,        // GPS delay blend gain (slider -1..2): 0 = timetable, 1 = GPS, beyond = overshoot
+  T: 420,        // GPS ignore limit (seconds): discard pings older than this (default 7 min)
   OFFSHAPE_M: 60,// discard GPS readings further than this many metres from the route shape
-  D: 400         // Nearby-stops starting search radius (metres)
+  D: 350         // Nearby-stops starting search radius (metres)
 };
 // Restore field-tuned values from a previous session (localStorage)
 try {
@@ -708,6 +711,38 @@ function schedSecsAtDist(trip, dist) {
   return trip.start + st[st.length-1][1];
 }
 
+// Inverse of schedSecsAtDist: a scheduled service-day time → shape distance.
+// Used to place the R-projected "position now" debug point back on the route.
+function distAtSchedSecs(trip, sec) {
+  const st = trip.stops;
+  const rel = sec - trip.start;
+  if (rel <= st[0][1]) return st[0][2];
+  for (let i = 0; i < st.length - 1; i++) {
+    if (rel <= st[i+1][1]) {
+      const t0 = st[i][1], t1 = st[i+1][1];
+      const f = t1 > t0 ? (rel - t0) / (t1 - t0) : 0;
+      return st[i][2] + (st[i+1][2] - st[i][2]) * f;
+    }
+  }
+  return st[st.length-1][2];
+}
+
+// Least-squares slope of delay-vs-time over the rolling window → R (sec/sec).
+// Best-fit beats endpoint-difference: one jittery reading gets averaged down
+// instead of dominating. Origin-shifted for numerical stability.
+function driftSlope(pts) {
+  const n = pts.length;
+  if (n < 2) return 0;
+  const t0 = pts[0].t;
+  let st = 0, sd = 0, stt = 0, std = 0;
+  for (const p of pts) {
+    const x = p.t - t0;
+    st += x; sd += p.delay; stt += x*x; std += x*p.delay;
+  }
+  const den = n*stt - st*st;
+  return den !== 0 ? (n*std - st*sd) / den : 0;
+}
+
 // Per fetch: compute observed GPS delays, log vs Trip Updates, harvest tram models.
 // No effect on positioning yet — field-validation pass first.
 function gpsDelaySensor(json) {
@@ -716,6 +751,15 @@ function gpsDelaySensor(json) {
   const csNow = nowSecs();
   const meta = {};
   GPS_CORR = {};   // rebuilt every fetch — same lifecycle as delays
+  TRAM_DRIFT = {};
+  Object.values(DRIFT_LINES).forEach(l => { try { map.removeLayer(l); } catch(e) {} });
+  DRIFT_LINES = {};
+  // Drop drift history for trips gone quiet > 15 min (dead transponder / finished)
+  const pruneBefore = nowEpoch - 900;
+  for (const dk in DRIFT_HIST) {
+    const h = DRIFT_HIST[dk];
+    if (!h.length || h[h.length-1].t < pruneBefore) delete DRIFT_HIST[dk];
+  }
   let total = 0, unmatched = 0, stale = 0, offshape = 0, used = 0;
   const ages = [], rows = [];
   (json.vehicles || []).forEach(v => {
@@ -739,6 +783,33 @@ function gpsDelaySensor(json) {
     const tu = tripDelays[key];
     const m = (meta[key] = meta[key] || {});
     m.gpsDelay = obs; m.pingAge = age;
+    // ── Drift (R): rolling 3-reading window, least-squares slope ──
+    // Dedup on ping timestamp — the 30s feed cache repeats a ping across our
+    // 10s fetches, and slider re-runs reuse the same json; only genuinely new
+    // pings advance the window.
+    const hist = DRIFT_HIST[key] || (DRIFT_HIST[key] = []);
+    if (!hist.length || hist[hist.length-1].t !== v.ts) {
+      hist.push({ delay: obs, t: v.ts });
+      if (hist.length > 3) hist.shift();
+    }
+    let R = 0;
+    if (hist.length >= 2) {
+      const span = hist[hist.length-1].t - hist[0].t;   // freshness/usability guard
+      if (span >= 20 && span <= 600) R = driftSlope(hist);
+    }
+    TRAM_DRIFT[key] = R;
+    // Red debug line: GPS point → best estimate of position NOW (latency
+    // catch-up + drift). R does NOT move the real tram dot yet — this only
+    // shows what it WOULD do. Drawn for toggled-on routes so lines pair with dots.
+    if (activeRoutes.has(trip.routeId)) {
+      const effDelayNow = obs + R * age;
+      const projDist = distAtSchedSecs(trip, csNow - effDelayNow);
+      const pp = posOnShape(shape, projDist);
+      if (pp && metresBetween(v.lat, v.lng, pp.lat, pp.lng) > 8) {
+        DRIFT_LINES[key] = L.polyline([[v.lat, v.lng], [pp.lat, pp.lng]],
+          { color: '#ff3b30', weight: 3, opacity: 0.9, dashArray: '4 4' }).addTo(map);
+      }
+    }
     // The correction the map will apply: nudge the timetable delay toward the
     // GPS-observed delay by G. Distrust readings that disagree with TU absurdly
     // (> 20 min apart = teleport / bad match) — those revert to pure timetable.
@@ -779,6 +850,15 @@ function gpsDelaySensor(json) {
       .slice(0, 8)
       .map(rt => rt + ':' + Math.round(byRoute[rt].reduce((s,x)=>s+x,0)/byRoute[rt].length) + 's(' + byRoute[rt].length + ')');
     console.log('GPS vs TU by route (worst first): ' + perRoute.join('  '));
+  }
+  const drifts = Object.entries(TRAM_DRIFT).filter(([k]) => (DRIFT_HIST[k]||[]).length >= 3);
+  if (drifts.length) {
+    const perMin = drifts.map(([,r]) => r*60);
+    const meanAbs = perMin.reduce((s,x)=>s+Math.abs(x),0) / perMin.length;
+    const top = drifts.slice().sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,5);
+    console.log('Drift (R): ' + drifts.length + ' trams w/ 3 readings | mean |R| ' +
+      meanAbs.toFixed(1) + ' s/min | biggest: ' +
+      top.map(([k,r]) => k.split('_')[0] + ' ' + (r*60>=0?'+':'') + (r*60).toFixed(1) + ' s/min').join(', '));
   }
 }
 
@@ -1197,9 +1277,9 @@ function nearbyStops() {
   if (!TRAM_NETWORK) return;
   // Radiating search: start at TUNING.D, grow by 100m until >=1 route appears,
   // capped at 3km (outer-suburb stops can be 600-800m from any point).
-  const start = TUNING.D || 400;
+  const start = TUNING.D || 350;
   let known = [];
-  for (let radius = start; radius <= 3000; radius += 100) {
+  for (let radius = start; radius <= 3000; radius += 50) {
     const found = new Set();
     Object.values(TRAM_NETWORK.stops).forEach(s => {
       if (metresBetween(userLoc.lat, userLoc.lng, s.lat, s.lng) <= radius) {
@@ -1207,7 +1287,7 @@ function nearbyStops() {
       }
     });
     known = [...found].filter(r => ROUTE_DEFS[r]);
-    if (known.length) break;
+    if (known.length >= 2) break;   // keep expanding until at least two routes appear
   }
   if (!known.length) {
     setAllRoutes(true);
@@ -1323,6 +1403,8 @@ function tickSchedule() {
         }
       }
       scheduleTrams[tramId].pos = pos;
+      const sdata = scheduleTrams[tramId].data;   // keep panTo target current (was frozen at creation → map jumped to stale spot)
+      if (sdata) { sdata.lat = finalLat; sdata.lng = finalLng; sdata.bearing = bearing; }
       const ic = scheduleTrams[tramId].marker._icon;
       if (ic) ic.classList.toggle('gps-broadcasting', !!TRAM_META[tripKey(trip)] && TRAM_META[tripKey(trip)].pingAge !== undefined);
     } else {
@@ -1433,7 +1515,7 @@ function showScheduleInfo(tramId) {
     })();
 
   document.getElementById('info-panel').classList.add('visible');
-  map.panTo([d.lat, d.lng], { animate: true });
+  if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) map.panTo([d.lat, d.lng], { animate: true });
 }
 
 // ── Load network data then draw ──────────────────────────────────────────────
@@ -1681,7 +1763,7 @@ function showInfo(vehicleId) {
   `;
 
   document.getElementById('info-panel').classList.add('visible');
-  map.panTo([d.lat, d.lng], { animate: true });
+  if (Number.isFinite(d.lat) && Number.isFinite(d.lng)) map.panTo([d.lat, d.lng], { animate: true });
 }
 
 function closeInfo() {
