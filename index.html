@@ -239,6 +239,7 @@
   /* Red ring marks trams with a fresh, matched GPS reading (broadcasting) */
   .tram-icon-outer.gps-broadcasting svg circle { stroke: #ff3b30; stroke-width: 3; }
   .tram-icon-outer.gps-broadcasting { filter: drop-shadow(0 0 4px rgba(255,59,48,0.6)); }
+  .drift-ping, .drift-arrow { background: none !important; border: none !important; }
   .tram-icon-outer svg.selected { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); }
 
   /* ── Mobile responsive ── */
@@ -806,8 +807,26 @@ function gpsDelaySensor(json) {
       const projDist = distAtSchedSecs(trip, csNow - effDelayNow);
       const pp = posOnShape(shape, projDist);
       if (pp && metresBetween(v.lat, v.lng, pp.lat, pp.lng) > 8) {
-        DRIFT_LINES[key] = L.polyline([[v.lat, v.lng], [pp.lat, pp.lng]],
-          { color: '#ff3b30', weight: 3, opacity: 0.9, dashArray: '4 4' }).addTo(map);
+        const ang = calcBearing(v.lat, v.lng, pp.lat, pp.lng);  // ping → target heading
+        const grp = L.layerGroup();
+        L.polyline([[v.lat, v.lng], [pp.lat, pp.lng]],
+          { color: '#ff00ff', weight: 5, opacity: 0.9 }).addTo(grp);
+        // P = where GPS last saw the tram (the ping)
+        L.marker([v.lat, v.lng], { interactive: false, zIndexOffset: 600, icon: L.divIcon({
+          className: 'drift-ping', iconSize: [22,22], iconAnchor: [11,11],
+          html: '<div style="width:22px;height:22px;border-radius:50%;background:#ff00ff;' +
+                'border:2px solid #fff;display:flex;align-items:center;justify-content:center;' +
+                'color:#fff;font:700 12px/1 monospace;box-shadow:0 0 4px rgba(0,0,0,.6);">P</div>'
+        }) }).addTo(grp);
+        // ▲ arrow = R-projected best estimate of position NOW (rotated along the line)
+        L.marker([pp.lat, pp.lng], { interactive: false, zIndexOffset: 600, icon: L.divIcon({
+          className: 'drift-arrow', iconSize: [24,24], iconAnchor: [12,12],
+          html: '<div style="font-size:22px;line-height:1;color:#ff00ff;' +
+                'text-shadow:0 0 3px #fff,0 0 3px #fff;' +
+                'transform:rotate(' + (ang - mapBearing) + 'deg);">▲</div>'
+        }) }).addTo(grp);
+        grp.addTo(map);
+        DRIFT_LINES[key] = grp;
       }
     }
     // The correction the map will apply: nudge the timetable delay toward the
